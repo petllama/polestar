@@ -5,8 +5,9 @@ const { header } = require('../generated');
 
 // The pack format the compiler writes, and the first Polestar version that
 // reads each format (written into the TOC as X-Polestar-Needs).
-// Format 2 = guides use format-2 step keys (`when`); older Polestar refuses
-// such packs. FORMAT stays 1: the default when no format-2 feature is used.
+// Format 2 = guides use format-2 step keys (`when`, `label`, `along`); older
+// Polestar refuses such packs. FORMAT stays 1: the default when no format-2
+// feature is used.
 const FORMAT = 1;
 const NEEDS = { 1: '0.1.0', 2: '0.3.0' };
 

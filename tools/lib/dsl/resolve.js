@@ -493,6 +493,8 @@ function resolveGuide(ast, data, diag, opts = {}) {
 				checkPredicateIds(w, data, (msg) => warn(s.whenLine, msg));
 			}
 		}
+		setIf(step, 'label', s.label);
+		if (s.along !== undefined) step.along = s.along;
 		step.goals = [];
 		hidden(step, '_line', s.line);
 		hidden(step, '_only', s.only);
@@ -528,6 +530,23 @@ function resolveGuide(ast, data, diag, opts = {}) {
 			}
 		}
 		guide.steps.push(step);
+	}
+	// Labels are guide-wide: names must be unique, and an `along until` must
+	// point at a step later than the one using it (indexes match ast.steps —
+	// every step is pushed as it is built).
+	const labels = new Map(); // name -> { index, line }
+	for (let i = 0; i < ast.steps.length; i++) {
+		const s = ast.steps[i];
+		if (!s.label) continue;
+		if (labels.has(s.label)) err(s.labelLine, `duplicate label "${s.label}" (first at line ${labels.get(s.label).line})`);
+		else labels.set(s.label, { index: i, line: s.labelLine });
+	}
+	for (let i = 0; i < ast.steps.length; i++) {
+		const s = ast.steps[i];
+		if (typeof s.along !== 'string') continue;
+		const t = labels.get(s.along);
+		if (!t) err(s.alongLine, `unknown label "${s.along}"`);
+		else if (t.index <= i) err(s.alongLine, `\`along until ${s.along}\` must name a later step`);
 	}
 	return guide;
 }
