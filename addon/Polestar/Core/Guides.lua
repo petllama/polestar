@@ -296,6 +296,10 @@ local function validate(def)
 		if type(step) ~= "table" then return ("step %d is not a table"):format(s) end
 		if type(step.goals) ~= "table" or #step.goals == 0 then return ("step %d has no goals"):format(s) end
 		if not checkOnly(step.only) then return ("step %d: bad only"):format(s) end
+		if step.when ~= nil then
+			local ok, err = ns.Predicate.Validate(step.when)
+			if not ok then return ("step %d: bad when: %s"):format(s, err) end
+		end
 		for g, goal in ipairs(step.goals) do
 			local err = checkGoal(goal)
 			if err then return ("step %d goal %d: %s"):format(s, g, err) end
@@ -312,7 +316,7 @@ Guides.Validate = validate
 -- recorded on the pack's record (problems) and printed by ns.Debug.
 ---------------------------------------------------------------------------
 
-Guides.FORMATS = { [1] = true }
+Guides.FORMATS = { [1] = true, [2] = true }
 Guides.RESERVED = { guides = true, forever = true, lookup = true, draft = true, polestar = true }
 local OFFICIAL_ADDON = "Polestar_Guides"
 local REQUIRED_META = { "addon", "title", "author", "version", "license" }
