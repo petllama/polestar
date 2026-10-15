@@ -52,6 +52,7 @@ every goal in it that is not `optional` is; its goals are open together.
 | `when <condition>` | Inside a step: the step only applies while the condition holds (format 2) |
 | `along [until <label>]` | Inside a step: its goals never hold up the route; shown "along the way" until the labelled step (format 2) |
 | `skipto <label> when <condition>` | Inside a step: when the condition holds while the route is at this step, jump ahead to the labelled step (format 2) |
+| `loop` | Inside a step: its `goto` points are a circuit to search for the step's kills and items |
 | `label <name>` | Inside a step: names the step for `along until` (format 2) |
 
 ## Goals
