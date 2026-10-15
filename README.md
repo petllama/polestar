@@ -29,6 +29,7 @@
 </p>
 
 <p align="center">
+  <a href="#this-fork-guide-logic-preview"><b>This fork</b></a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-it-is">What it is</a> ·
   <a href="#a-look-inside">A look inside</a> ·
@@ -48,6 +49,68 @@
     <td align="center" width="240"><a href="#building-from-source"><b>Work on Polestar</b></a><br>Fix a guide, build the addon, run the tests.</td>
   </tr>
 </table>
+
+## This fork: guide logic preview
+
+This is **petllama/polestar**, a fork of [fitzforge/polestar](https://github.com/fitzforge/polestar)
+that adds declarative guide logic: steps that apply only under a condition,
+objectives you finish along the way, forward jumps, conditional hand-offs,
+play modes and search loops. Everything is proposed upstream as seven stacked
+pull requests, [#41](https://github.com/fitzforge/polestar/pull/41) to
+[#47](https://github.com/fitzforge/polestar/pull/47); until they are merged,
+the official releases are the ones to use for playing.
+
+**Download:** [Polestar 0.3.0-parity.1 (unofficial preview)](https://github.com/petllama/polestar/releases/tag/v0.3.0-parity.1).
+It is the official 0.2.3 release with this fork's core: the official guides,
+Codex, QuestDB and ItemDB files are unchanged, and every pack that loads in
+0.2.3 loads in it. Install it like any release; to go back, install the
+official one the same way.
+
+### For players
+
+- **Along the way:** a section of the guide window lists objectives a guide
+  wants done while you travel (kill boars on the way, loot an item when you see
+  it). They never hold up the route; click one to point the arrow at it.
+- **Play style:** a new options page (Guide › Play style) with Hardcore,
+  Self-found, Auction house and Group content toggles and an XP-rate slider
+  (1x–5x). Guides can show or skip steps by them.
+- **Steps that know your state:** a guide can skip a step while you are not on
+  its quest, already hold its item, are in another zone, or have outlevelled
+  it, and offer its next guide only when it fits your character. A step passed
+  while it did not apply stays passed.
+
+### For guide authors (pack format 3)
+
+| Line | Meaning |
+|---|---|
+| `when <condition>` | The step applies only while the condition holds |
+| `label <name>` | Names a step for the lines below |
+| `along [until <label>]` | The step's goals are done along the way, never blocking |
+| `skipto <label> when <condition>` | Jump ahead while the condition holds (saved per character) |
+| `next <guide> when <condition>` | A route option offered only while the condition holds |
+| `level 12.5` / `level 12+3450` | Reach a point inside a level |
+| `loop` | The step's waypoints become the search circuit for its kills and items |
+
+Conditions: `onquest`, `ready`, `turnedin`, `has <item> [xN]`, `level`, `xp`,
+`skill`, `rep`, `zone "<Zone>"`, `mode <hardcore|ssf|ah|group>`, `xprate`,
+`done <label>`, class, race and faction names, with `and`, `or`, `not` and
+parentheses. They compile to a small closed table format, never to Lua.
+
+A pack is compiled as format 3 only when it uses one of these lines; every
+other pack is byte for byte what the official compiler writes. Format 3 needs
+this fork's core (0.3.0); the official release refuses such packs rather than
+misreading them. The full reference is on the
+[`parity/guards`](https://github.com/petllama/polestar/tree/parity/guards)
+branch: [GUIDE_FORMAT.md](https://github.com/petllama/polestar/blob/parity/guards/docs/GUIDE_FORMAT.md),
+[GUIDE_CHEATSHEET.md](https://github.com/petllama/polestar/blob/parity/guards/docs/GUIDE_CHEATSHEET.md)
+and [PACK_FORMAT.md](https://github.com/petllama/polestar/blob/parity/guards/docs/PACK_FORMAT.md).
+
+### How it was built
+
+Each feature was specified with failing tests first, written by a local
+model (Qwen 3.8 Flash on one RTX 4080) and reviewed by Claude, one small task
+at a time. All seven branches pass the full test suite; the format number and
+the version it needs are placeholders for the upstream maintainer to decide.
 
 ## Quick start
 
