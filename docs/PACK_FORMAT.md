@@ -338,11 +338,15 @@ a bad one refuses the guide ("step N: bad when"). The node shapes:
 { "all", p... } { "any", p... } { "not", p } { "onquest", q } { "ready", q } { "turnedin", q }
 { "item", id, op, n } { "level", op, n } { "class", { "WARRIOR", ... } } { "race", { "Human", ... } }
 { "faction", "Alliance"|"Horde" } { "zone", "Name" } { "skill", skillLine, op, n } { "rep", factionID, op, standing }
-{ "done", label }
+{ "done", label } { "mode", key } { "xprate", op, n } { "xp", op, v }
 ```
 
 `op` is one of `">="`, `">"`, `"<="`, `"<"`, `"=="`, `"~="`. Nesting is
 limited to 16 levels.
+
+`{ "mode", key }` checks a play-mode setting (`key` is `"hardcore"`, `"ssf"`, `"ah"` or `"group"`);
+`{ "xprate", op, n }` checks the XP-rate setting; `{ "xp", op, v }` checks the level, where `v` is
+the level plus the fraction of it done.
 
 Format 2 also adds two step keys. `label` is a string: the step's name.
 `along` is `true`, or the label string of a LATER step. Registration refuses a
@@ -357,8 +361,14 @@ predicate holds, the steps up to the labelled step are skipped for the
 character. A saved jump is the value "jump" in the skipped table, next to the
 player's own skips and carried over pack updates like them.
 
-The compiler writes format 2 only when a guide uses `when`, `label`, `along` or
-`skipto`; every other pack stays format 1.
+Format 2 adds a goal key `frac` on `level` goals: a number with 0 < frac < 1,
+the point inside the level the goal asks for.
+
+Format 2 adds a guide key `nextWhen`: a table of guide id to condition, the
+route options offered only while their condition holds.
+
+The compiler writes format 2 only when a guide uses `when`, `label`, `along`,
+`skips`, `nextWhen` or `frac`; every other pack stays format 1.
 
 ## Versioning
 
