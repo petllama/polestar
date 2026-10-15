@@ -22,7 +22,7 @@ const LABEL_RE = /^[A-Za-z0-9_-]+$/;
 
 const HEADER_KEYS = ['guide', 'title', 'levels', 'zone', 'faction', 'race', 'class', 'next', 'category', 'folder', 'keywords', 'collects', 'author', 'version', 'coords', 'pitch', 'pro', 'con'];
 // Lines inside a step that are not goals.
-const STEP_KEYS = ['zone', 'only', 'tip', 'when', 'label', 'along'];
+const STEP_KEYS = ['zone', 'only', 'tip', 'when', 'label', 'along', 'skipto'];
 
 const COMMON = ['text', 'optional', 'only'];
 // `frame` = the `era` / `live` modifiers: which map frame explicit coordinates are in.
@@ -290,6 +290,15 @@ function parseGuide(text, file, diag) {
 					continue;
 				}
 				step.alongLine = ln;
+			} else if (kw === 'skipto') {
+				if (toks.length < 3 || toks[1].quoted || !LABEL_RE.test(toks[1].text) || toks[2].quoted || toks[2].text.toLowerCase() !== 'when') {
+					err(ln, '`skipto` needs a label and a condition: skipto <label> when <condition>');
+					continue;
+				}
+				const r = parsePredicate(toks.slice(3));
+				r.errors.forEach((e) => err(ln, `\`skipto\`: ${e}`));
+				if (r.errors.length) continue;
+				(step.skips ||= []).push({ to: toks[1].text, when: r.value, line: ln });
 			} else {
 				const tip = unquoteRest(line, lex, 1);
 				if (!tip) {
