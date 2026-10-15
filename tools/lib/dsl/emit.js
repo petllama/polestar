@@ -127,8 +127,8 @@ function emitGuide(guide, sourceRel) {
 				out.push('\t\t\t\t},');
 			}
 			out.push('\t\t\t},');
-		} else if (k === 'nextWhen') out.push(`\t\t\t\tnextWhen = { ${Object.keys(v).map((id) => `[${luaString(id)}] = ${toLua(v[id])}`).join(', ')} },`);
-		else if (Array.isArray(v)) out.push(`				${k} = ${list(v)},`);
+		} else if (k === 'nextWhen') out.push(`\t\t\tnextWhen = { ${Object.keys(v).map((id) => `[${luaString(id)}] = ${toLua(v[id])}`).join(', ')} },`);
+		else if (Array.isArray(v)) out.push(`\t\t\t${k} = ${list(v)},`);
 		else out.push(`\t\t\t${k} = ${scalar(v)},`);
 	}
 	out.push('\t\t})', '\tend', '\tregister()', 'end');
