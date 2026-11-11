@@ -65,8 +65,21 @@ pub async fn check(app: &AppHandle, http: &reqwest::Client) -> Result<Option<Ava
 	Ok(update.map(|update| Available { version: update.version.clone(), update }))
 }
 
+/// Set at build time (`POLESTAR_PORTABLE=1`) for the portable Windows copy: a single .exe with
+/// no installer. Updates are still announced, but installing one would run the MSI installer
+/// and leave a second, installed client, so the portable copy opens its download page instead.
+pub const PORTABLE: bool = option_env!("POLESTAR_PORTABLE").is_some();
+pub const PORTABLE_RELEASES: &str = "https://github.com/petllama/polestar/releases";
+
 /// Downloads, verifies and installs the update, then restarts the app.
 pub async fn install(app: &AppHandle, available: Available) -> Result<(), String> {
+	if PORTABLE {
+		use tauri_plugin_opener::OpenerExt;
+		let _ = app.opener().open_url(PORTABLE_RELEASES, None::<&str>);
+		return Err(format!(
+			"This is the portable Polestar Client, which does not install updates. Download the new portable copy from {PORTABLE_RELEASES} and replace this file with it."
+		));
+	}
 	available.update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
 	app.restart();
 }
