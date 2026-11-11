@@ -155,6 +155,8 @@
 		<section class="section">
 			<h2>General</h2>
 			<div class="rows">
+				<!-- The portable copy writes nothing to the registry (src-tauri/src/portable.rs). -->
+				{#if !import.meta.env.VITE_POLESTAR_PORTABLE}
 				<div class="row" title="Starts Polestar Client in the tray when you log in to your computer.">
 					<span class="label">Start with my computer</span>
 					<button
@@ -170,6 +172,7 @@
 							})}
 					></button>
 				</div>
+				{/if}
 				<div class="row" title="On: the intro plays in full every time Polestar Client opens, from the tray too. Off: in full only on the first launch after an install or update, a short one on other launches. A click or any key skips it.">
 					<span class="label">Play the full intro every launch</span>
 					<button class="toggle" role="switch" aria-checked={intro.full} aria-label="Play the full intro every launch" onclick={() => setFullIntro(!intro.full)}></button>

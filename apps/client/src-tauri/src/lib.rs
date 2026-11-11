@@ -15,6 +15,7 @@ mod launch;
 mod manager;
 mod net;
 mod packs;
+mod portable;
 mod register;
 #[cfg(target_os = "linux")]
 mod relaunch;
@@ -94,8 +95,9 @@ fn links(app: &AppHandle) {
 			}
 		}
 	}
+	// The portable copy writes nothing to the registry (portable.rs).
 	#[cfg(windows)]
-	{
+	if !portable::ACTIVE {
 		use tauri_plugin_deep_link::DeepLinkExt;
 		if let Err(e) = app.deep_link().register("polestar") {
 			eprintln!("Could not register polestar:// links: {e}");
@@ -109,6 +111,8 @@ pub fn run() {
 	let hidden = std::env::args().any(|a| a == HIDDEN_ARG);
 	// Before anything else, so the page can ask for its window the moment it loads.
 	let mut builder = tauri::Builder::default().manage(launch::Launch::new(hidden));
+	let mut context = tauri::generate_context!();
+	let portable_main = portable::take_main(&mut context);
 	#[cfg(target_os = "linux")]
 	{
 		builder = builder.manage(relaunch::Relaunch::default());
@@ -133,7 +137,26 @@ pub fn run() {
 		.plugin(tauri_plugin_opener::init())
 		.plugin(tauri_plugin_updater::Builder::new().build())
 		.plugin(tauri_plugin_notification::init())
-		.setup(|app| {
+		.setup(move |app| {
+			// The portable copy keeps everything beside its .exe (portable.rs).
+			let portable_dir = if portable::ACTIVE && !smoke::active() {
+				match portable::data_dir() {
+					Ok(dir) => Some(dir),
+					Err(e) => {
+						portable::fail(app.handle(), &e);
+						std::process::exit(1);
+					}
+				}
+			} else {
+				None
+			};
+			if let Some(config) = &portable_main {
+				let base = portable_dir.clone().unwrap_or_else(smoke::data_dir);
+				if let Err(e) = portable::open_main(app.handle(), config, portable::webview_dir(&base)) {
+					portable::fail(app.handle(), &format!("Polestar Client could not open its window with its data in {}: {e}\n\nKeep the portable copy in a folder you can write to (not Program Files).", base.display()));
+					std::process::exit(1);
+				}
+			}
 			#[cfg(target_os = "linux")]
 			if !smoke::active() {
 				desktop::integrate();
@@ -149,8 +172,21 @@ pub fn run() {
 					}
 				});
 			}
-			let dir = if smoke::active() { smoke::data_dir() } else { app.path().app_data_dir()? };
-			let store = Store::open(dir)?;
+			let dir = if smoke::active() {
+				smoke::data_dir()
+			} else if let Some(dir) = portable_dir {
+				dir
+			} else {
+				app.path().app_data_dir()?
+			};
+			let store = match Store::open(dir.clone()) {
+				Ok(store) => store,
+				Err(e) if portable::ACTIVE => {
+					portable::fail(app.handle(), &format!("Polestar Client could not keep its data in {}: {e}\n\nKeep the portable copy in a folder you can write to (not Program Files).", dir.display()));
+					std::process::exit(1);
+				}
+				Err(e) => return Err(e.into()),
+			};
 			let engine = Engine::new(app.handle().clone(), store)?;
 			app.manage(Arc::clone(&engine));
 			tray::create(app.handle())?;
@@ -221,7 +257,7 @@ pub fn run() {
 			commands::client_log,
 			commands::smoke_fault,
 		])
-		.build(tauri::generate_context!())
+		.build(context)
 		.expect("Polestar Client could not start")
 		.run(|_app, event| {
 			if let RunEvent::Exit = event {
