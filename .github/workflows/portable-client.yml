@@ -1,0 +1,93 @@
+name: Portable client (Windows)
+
+# Builds Polestar Client for Windows x64 as one portable .exe (no installer),
+# launch-tests it on the runner, and publishes it as a release on this fork.
+# Runs on pushes to the portable-client branch. POLESTAR_PORTABLE makes the
+# in-app "Update to" button open this fork's releases instead of running the MSI,
+# and keeps all data beside the .exe with no registry writes (src/portable.rs);
+# VITE_POLESTAR_PORTABLE hides "Start with my computer" in Settings.
+on:
+  push:
+    branches: [portable-client]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  POLESTAR_PORTABLE: "1"
+  VITE_POLESTAR_PORTABLE: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          package_json_file: apps/client/package.json
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Frontend dependencies
+        working-directory: apps/client
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build (no bundle)
+        working-directory: apps/client
+        run: pnpm tauri build --no-bundle --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect
+        id: collect
+        run: |
+          version="$(jq -r .version apps/client/src-tauri/tauri.conf.json)"
+          name="Polestar.Client_${version}_x64_portable"
+          mkdir out
+          cp apps/client/src-tauri/target/release/polestar-client.exe "out/$name.exe"
+          (cd out && 7z a -bd "$name.zip" "$name.exe" >/dev/null && sha256sum * > SHA256SUMS.txt)
+          ls -l out; cat out/SHA256SUMS.txt
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "exe=out/$name.exe" >> "$GITHUB_OUTPUT"
+
+      # The client's own launch test (src-tauri/src/smoke.rs): fresh temp data folder, no update
+      # check, no registration; exit 0 only when the window drew its page with no fault.
+      - name: Launch test
+        shell: pwsh
+        run: |
+          $env:POLESTAR_SMOKE = "20"
+          $p = Start-Process -FilePath "${{ steps.collect.outputs.exe }}" -Wait -PassThru
+          Write-Host "exit code $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.collect.outputs.version }}
+        run: |
+          tag="portable-client-v$VERSION"
+          notes="Polestar Client $VERSION for Windows x64 as a portable app: no installer, just run the .exe (or unzip and run).
+
+          - Built from fitzforge/polestar \`client-v$VERSION\` plus the portable changes: \"Update to …\" opens this release page instead of running the MSI installer, and the client leaves no traces outside its own folder.
+          - Everything it keeps (settings, consent, the upload token, kept guides and the WebView2 cache) goes in a \"Polestar Client data\" folder next to the .exe. Put the .exe in a folder you can write to (not Program Files). To remove it, delete the .exe and that folder.
+          - Writes nothing to the registry: polestar:// links are not registered (open the client and install guides from it instead) and \"Start with my computer\" is not offered.
+          - Update by downloading the new portable copy and replacing the .exe; the data folder stays.
+          - Needs the Microsoft Edge WebView2 Runtime (built into Windows 10/11).
+          - Unsigned: SmartScreen may warn (More info → Run anyway).
+          - Launch-tested on the GitHub Windows runner (POLESTAR_SMOKE)."
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Polestar Client $VERSION portable (Windows)" --notes "$notes" --latest=false \
+            out/*.exe out/*.zip out/SHA256SUMS.txt
