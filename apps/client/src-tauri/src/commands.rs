@@ -232,6 +232,10 @@ pub fn get_autostart(app: AppHandle) -> bool {
 
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+	// It writes to the registry, which the portable copy never does (portable.rs).
+	if crate::portable::ACTIVE {
+		return Err("The portable Polestar Client does not start with your computer.".to_owned());
+	}
 	let manager = app.autolaunch();
 	let result = if enabled { manager.enable() } else { manager.disable() };
 	result.map_err(|e| format!("Could not change starting with your computer: {e}"))
