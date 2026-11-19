@@ -219,6 +219,7 @@ local function field(v)
 	end
 	return ""
 end
+ns.Field = field -- one field as a record holds it (Sim.lua's local copy)
 
 ---------------------------------------------------------------------------
 -- SavedVariables
@@ -809,6 +810,7 @@ function ns.ClearAll()
 	state.chunks, state.maps = {}, {}
 	db.chunks, db.maps = state.chunks, state.maps
 	storedBytes, pendingDropped = 0, 0
+	if ns.SimClear then ns.SimClear() end
 	if enabled and inWorld then startSession(false) end
 end
 

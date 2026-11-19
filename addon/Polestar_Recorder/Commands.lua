@@ -1,9 +1,9 @@
--- /psrec: status, on | off, explore on | off, ui, mark <text>, trail on [label] | off, clear.
+-- /psrec: status, on | off, explore on | off, sim on | off | clear, ui, mark <text>, trail on [label] | off, clear.
 
 local ADDON, ns = ...
 local L = ns.L
 
-local tostring, GetTime, floor = tostring, GetTime, math.floor
+local tostring, GetTime, floor, ipairs = tostring, GetTime, math.floor, ipairs
 
 local CLEAR_WINDOW = 30 -- seconds to confirm /psrec clear
 
@@ -22,6 +22,7 @@ local function status()
 	end
 	ns.Print(L["install id: %s"]:format(tostring(st.install)))
 	ns.Print(L["explorer mode: %s (/psrec explore on | off)"]:format(ns.ExploreAllowed() and "|cff4fd18f" .. L["on"] .. "|r" or "|cffd14f4f" .. L["off"] .. "|r"))
+	if ns.SimOn and ns.SimOn() then ns.Print(L["sim telemetry: %s (/psrec sim)"]:format("|cff4fd18f" .. L["on"] .. "|r")) end
 	ns.Print(L["commands: /psrec on | off | ui | mark <text> | trail on [label] | trail off | clear"])
 	-- The game writes the recording (and the on/off state Polestar Client shows) to disk only at
 	-- a logout or /reload: until then the uploader sees neither.
@@ -74,6 +75,45 @@ commands.explore = function(rest)
 	ns.Print(L["explorer mode %s"]:format("|cff4fd18f" .. L["on"] .. "|r"))
 	ns.Print(L["In Forever's new zones and dungeons the Recorder notes the creatures, your path, quest map points, dungeon floors, boss pulls, where quest givers stand and the objects you open in more detail. Nothing new about you."])
 	if not ns.IsEnabled() then ns.Print(L["recording is off; /psrec on first"]) end
+end
+
+-- /psrec sim on | off | clear: sim telemetry (Sim.lua), off by default.
+-- Bare, it shows the state and which of the values it reads the client
+-- keeps secret right now (try it in and out of combat).
+local READS = {
+	{ "h", "health" }, { "p", "power" }, { "s", "stats and armor" }, { "a", "auras" },
+	{ "t", "target" }, { "n", "nameplate threat" }, { "c", "own casts" },
+}
+
+commands.sim = function(rest)
+	local sub = rest:lower()
+	if sub == "on" or sub == "off" then
+		ns.SetSim(sub == "on")
+		ns.Print(L["sim telemetry %s"]:format(sub == "on" and "|cff4fd18f" .. L["on"] .. "|r" or "|cffd14f4f" .. L["off"] .. "|r"))
+		if sub == "on" then
+			ns.Print(L["Records regeneration, meals, pulls and the damage you take, for leveling simulators. Only your own character's values and the creatures you fight."])
+			if not ns.IsEnabled() then ns.Print(L["recording is off; /psrec on first"]) end
+		end
+		return
+	elseif sub == "clear" then
+		ns.SimClear()
+		ns.Print(L["the local copy of the sim telemetry was deleted"])
+		return
+	elseif sub ~= "" then
+		ns.Print(L["usage: /psrec sim on | off | clear"])
+		return
+	end
+	local st = ns.SimStats()
+	ns.Print(L["sim telemetry %s: %d records kept locally (about %d KiB of %d KiB)"]:format(
+		ns.SimOn() and "|cff4fd18f" .. L["on"] .. "|r" or "|cffd14f4f" .. L["off"] .. "|r", st.records, floor(st.bytes / 1024 + 0.5), ns.SIMLOG_BYTES / 1024))
+	local seen = ns.SimProbe()
+	local parts = {}
+	for _, r in ipairs(READS) do
+		local v = seen[r[1]]
+		local word = v == true and "|cff4fd18f" .. L["readable"] .. "|r" or v == false and "|cffd14f4f" .. L["secret"] .. "|r" or L["not tried"]
+		parts[#parts + 1] = L[r[2]] .. " " .. word
+	end
+	ns.Print(table.concat(parts, ", "))
 end
 
 commands.mark = function(rest)

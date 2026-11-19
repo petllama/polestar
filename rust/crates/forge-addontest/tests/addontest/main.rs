@@ -408,6 +408,8 @@ mod recorder_perf;
 mod recorder_progress;
 #[path = "recorder-route.rs"]
 mod recorder_route;
+#[path = "recorder-sim.rs"]
+mod recorder_sim;
 mod release;
 mod riding;
 #[path = "route-experimental.rs"]

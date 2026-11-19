@@ -170,6 +170,28 @@ kinds! {
 	Craft "craft" ["recipeSpellId": F::U, "itemId": F::OU, "count": F::OU],
 	Achieve "achieve" ["id": F::U],
 	Step "step" ["guide": F::Text, "step": F::OU, "reason": F::Tok(&["next", "skip", "back", "auto", "pick", "done"]), "P": F::P],
+	// Sim telemetry (`/psrec sim`): out-of-combat regeneration per resource and state, a Food or
+	// Drink aura from start to end, one record per combat, and the health lost to one mob's swings
+	// (`dt:amount` in tenths of a second). Only the player's own values and the creature fought.
+	Regen "regen" [
+		"res": F::Tok(&["h", "m"]), "state": F::Tok(&["n", "5", "e", "a", "h"]), "level": F::OU, "spirit": F::OU, "intellect": F::OU,
+		"max": F::OU, "count": F::U, "sum": F::OU, "lo": F::OU, "hi": F::OU, "gaps": ITEMS, "rate": F::OI, "rate5": F::OI,
+	],
+	Meal "meal" [
+		"kind": F::Tok(&["f", "d", "b"]), "seconds": F::OU, "level": F::OU, "hp0": F::OU, "hp1": F::OU, "hpMax": F::OU,
+		"mp0": F::OU, "mp1": F::OU, "mpMax": F::OU,
+	],
+	Pull "pull" [
+		"tenths": F::OU, "level": F::OU, "hp0": F::OU, "hpMin": F::OU, "hp1": F::OU, "hpMax": F::OU, "powerType": F::OU,
+		"pw0": F::OU, "pwMin": F::OU, "pw1": F::OU, "pwMax": F::OU, "kills": F::OU, "xp": F::OU, "died": BOOL,
+		"npcId": F::OU, "npcLevel": F::OI, "cls": CLS, "creatureType": F::Name(MAX_PLACE), "caster": F::Tok(&["1", "0", ""]),
+		"mobs": F::OU, "mobsHow": F::Tok(&["t", "c", ""]), "casts": ITEMS, "items": ITEMS, "gap": F::OU, "ate": F::Flags("fdb"),
+		"restSeconds": F::OU, "absorb": F::Tok(&["1", "0", ""]), "secret": F::Flags("hpancst"),
+	],
+	Hit "hit" [
+		"level": F::OU, "armor": F::OU, "absorb": F::Tok(&["1", "0", ""]), "mobs": F::OU, "npcId": F::OU, "npcLevel": F::OI,
+		"hits": ITEMS, "more": F::OU, "excluded": F::OU,
+	],
 }
 
 impl Kind {
@@ -726,6 +748,42 @@ mod tests {
 	}
 
 	#[test]
+	fn decodes_the_sim_telemetry_kinds() {
+		// What `/psrec sim` adds (docs/RECORDING.md "Sim telemetry"); kinds of their own, so an older
+		// reader skips them and keeps the chunk.
+		let c = chunk(concat!(
+			"regen\t1\th\tn\t12\t25\t30\t200\t5\t30\t6\t6\t20:4\t31\t\n",
+			"regen\t2\tm\t5\t12\t25\t30\t300\t1\t10\t10\t10\t\t\t\n",
+			"meal\t3\tb\t18\t12\t80\t200\t200\t70\t300\t300\n",
+			"pull\t4\t70\t12\t200\t170\t200\t200\t0\t300\t250\t250\t300\t1\t45\t0\t299\t3\tn\tBeast\t0\t1\tt\t585:2;0:1\t118:1\t20\tfd\t14\t1\thc\n",
+			"pull\t5\t30\t12\t\t\t150\t200\t1\t0\t0\t20\t100\t0\t0\t1\t\t\t\t\t\t\t\t\t\t\t\t0\t\th\n",
+			"hit\t6\t12\t50\t0\t1\t299\t3\t20:10;21:9;19:11\t0\t0\n",
+		))
+		.unwrap();
+		assert_eq!(c.skipped_unknown, 0);
+		let k: Vec<Kind> = c.records.iter().map(|r| r.kind).collect();
+		assert_eq!(k, [Kind::Regen, Kind::Regen, Kind::Meal, Kind::Pull, Kind::Pull, Kind::Hit]);
+		let r = &c.records;
+		assert_eq!((r[0].get("res"), r[0].get("state"), r[0].int("count"), r[0].list("gaps")), ("h", "n", Some(5), vec![vec!["20", "4"]]));
+		assert_eq!((r[2].get("kind"), r[2].int("hp0"), r[2].int("mpMax")), ("b", Some(80), Some(300)));
+		assert_eq!((r[3].int("hpMin"), r[3].get("creatureType"), r[3].ids("casts"), r[3].ids("items"), r[3].get("ate"), r[3].get("secret")), (Some(170), "Beast", vec![585, 0], vec![118], "fd", "hc"));
+		assert_eq!((r[4].int("hp0"), r[4].get("died"), r[4].int("npcId")), (None, "1", None));
+		assert_eq!(r[5].list("hits").len(), 3);
+		// Strict like every known kind.
+		for bad in [
+			"regen\t0\tx\tn\t1\t1\t1\t1\t1\t1\t1\t1\t\t\t",
+			"regen\t0\th\tz\t1\t1\t1\t1\t1\t1\t1\t1\t\t\t",
+			"meal\t0\tx\t3",
+			"pull\t0\t-5",
+			"pull\t0\t1\t1\t1\t1\t1\t1\t0\t1\t1\t1\t1\t0\t0\t2",
+			"hit\t0\t1\t1\t2\t1\t1\t1\t20:10\t0\t0",
+			"hit\t0\t1\t1\t0\t1\t1\t1\t20;10",
+		] {
+			assert!(chunk(bad).is_err(), "{bad}");
+		}
+	}
+
+	#[test]
 	fn rejects_each_malformed_kind() {
 		// One malformed example per kind: the whole chunk is rejected.
 		let bad = [
@@ -786,6 +844,10 @@ mod tests {
 			"poi\t0\t364\t2",
 			"where\t0\tq\t1",
 			"open\t0\t3365\t1420\t1\t1\tz",
+			"regen\t0\tx\tn\t1",
+			"meal\t0\tf\t-3",
+			"pull\t0\t70\t1\t1\t1\t1\t1\t0\t1\t1\t1\t1\t0\t0\tyes",
+			"hit\t0\t1\t1\t0\t1\t1\t1\t20;10",
 		];
 		let mut kinds: Vec<&str> = Vec::new();
 		for b in bad {

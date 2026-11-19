@@ -574,6 +574,23 @@ fn events_of(r: &Record, t: f64, st: &mut State, known: &Known) -> Vec<Ev> {
 			e.text("guide", r, "guide").int("step", r, "step").set("reason", reason).set("how", how).pos(r);
 			e.opt("lvl", st.lvl).opt("xp", st.xp).opt("xpMax", st.xp_max).opt("rested", st.rested).set("combat", st.combat);
 		}
+		Kind::Regen | Kind::Meal | Kind::Pull | Kind::Hit => {
+			// Sim telemetry: every field as written, numbers as numbers and lists as pairs of numbers.
+			for name in r.kind.field_names() {
+				let v = r.get(name);
+				if v.is_empty() {
+					continue;
+				}
+				if let Ok(n) = v.parse::<i64>() {
+					e.set(name, n);
+				} else if v.contains(':') {
+					let items: Vec<Value> = r.list(name).iter().map(|p| json!(p.iter().map(|s| s.parse::<i64>().ok()).collect::<Vec<_>>())).collect();
+					e.set(name, items);
+				} else {
+					e.set(name, v);
+				}
+			}
+		}
 	}
 	vec![e]
 }
@@ -900,6 +917,44 @@ mod tests {
 		assert_eq!(links, [(300.2, 723), (700.1, 723)]);
 		let tagged: Vec<&Value> = ev.iter().filter(|e| e["e"] == "drop").flat_map(|e| e["items"].as_array().unwrap()).filter(|i| i.get("q").is_some()).collect();
 		assert_eq!(tagged.len(), 2);
+	}
+
+	#[test]
+	fn sim_telemetry_reaches_the_session_events_with_every_field() {
+		let session = "session\t0\tabcdefghij\tScourge\tPRIEST\tHorde\t2\t12\tenUS\t62345\t11508\t3\t\t2.0.0\t1.4.0\t\n";
+		let body = [
+			"regen\t10\th\tn\t12\t25\t30\t200\t5\t30\t6\t6\t20:4\t31\t",
+			"meal\t20\td\t3\t12\t80\t80\t200\t70\t120\t300",
+			"pull\t90\t70\t12\t200\t170\t200\t200\t0\t300\t250\t250\t300\t1\t45\t0\t299\t3\tn\tBeast\t0\t1\tt\t585:2\t\t\t\t0\t0\t",
+			"hit\t90\t12\t50\t0\t1\t299\t3\t20:10;21:9\t0\t0",
+		]
+		.join("\n");
+		let src = Source { contributor: "local".into(), install: "k3j9x0q2m7ab".into(), chunks: vec![chunk(1, 1700000000, &format!("{session}{body}\n"))], maps: BTreeMap::new() };
+		let out = sessions(&[src]);
+		let ev: Vec<Value> = out[0]["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|e| e["e"] != "session")
+			.map(|e| {
+				let mut e = e.clone();
+				e.as_object_mut().unwrap().remove("t");
+				e
+			})
+			.collect();
+		assert_eq!(
+			ev,
+			[
+				json!({ "e": "regen", "res": "h", "state": "n", "level": 12, "spirit": 25, "intellect": 30, "max": 200, "count": 5, "sum": 30, "lo": 6, "hi": 6, "gaps": [[20, 4]], "rate": 31 }),
+				json!({ "e": "meal", "kind": "d", "seconds": 3, "level": 12, "hp0": 80, "hp1": 80, "hpMax": 200, "mp0": 70, "mp1": 120, "mpMax": 300 }),
+				json!({
+					"e": "pull", "tenths": 70, "level": 12, "hp0": 200, "hpMin": 170, "hp1": 200, "hpMax": 200, "powerType": 0, "pw0": 300, "pwMin": 250,
+					"pw1": 250, "pwMax": 300, "kills": 1, "xp": 45, "died": 0, "npcId": 299, "npcLevel": 3, "cls": "n", "creatureType": "Beast",
+					"caster": 0, "mobs": 1, "mobsHow": "t", "casts": [[585, 2]], "restSeconds": 0, "absorb": 0,
+				}),
+				json!({ "e": "hit", "level": 12, "armor": 50, "absorb": 0, "mobs": 1, "npcId": 299, "npcLevel": 3, "hits": [[20, 10], [21, 9]], "more": 0, "excluded": 0 }),
+			]
+		);
 	}
 
 	#[test]

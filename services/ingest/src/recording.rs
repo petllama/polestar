@@ -205,6 +205,32 @@ mod tests {
 	}
 
 	#[test]
+	fn sim_telemetry_records_are_stored_as_sent_and_checked() {
+		// `/psrec sim`: a busy chunk of pulls holds more of them than an older server took as unknown
+		// records; each is a known kind now, stored as sent and counted.
+		let mut body = String::new();
+		for i in 0..(MAX_UNKNOWN_RECORDS + 4) {
+			body.push_str(&format!("pull\t{i}\t70\t12\t200\t170\t200\t200\t0\t300\t250\t250\t300\t1\t45\t0\t299\t3\tn\tBeast\t0\t1\tt\t585:2\t\t\t\t0\t0\t\n"));
+		}
+		body.push_str("hit\t100\t12\t50\t0\t1\t299\t3\t20:10;21:9\t0\t0\nregen\t101\th\tn\t12\t25\t30\t200\t5\t30\t6\t6\t20:4\t\t\nmeal\t102\td\t18\t12\t80\t200\t200\t70\t300\t300\n");
+		let sent = format!("{HEAD}{body}");
+		let Prepared::Ok(c) = prep(sent.clone()) else { panic!("stored") };
+		let text = String::from_utf8(zstd::stream::decode_all(&c.ztext[..]).unwrap()).unwrap();
+		assert_eq!(text, sent, "every sim record is kept");
+		assert!(c.suspect.is_empty(), "{:?}", c.suspect);
+		assert_eq!(c.kinds["pull"], (MAX_UNKNOWN_RECORDS + 4) as u64);
+		for k in ["hit", "regen", "meal"] {
+			assert_eq!(c.kinds[k], 1, "{k}");
+		}
+		// Strictly decoded: a malformed one rejects the chunk, counted by its rule.
+		let Prepared::Rejected(r, class) = prep(format!("{HEAD}meal\t0\tx\t3\n")) else { panic!("rejected") };
+		assert_eq!((r.reason.as_str(), class.as_str()), ("record 2 (meal): field kind: bad value 'x'", "meal: field kind: bad value"));
+		// Their creature ids are held below a million like every other record's.
+		let Prepared::Ok(c) = prep(format!("{HEAD}hit\t0\t12\t50\t0\t1\t{}\t3\t20:10\t0\t0\n", plausible::MAX_ID)) else { panic!("stored") };
+		assert!(c.suspect.iter().any(|s: &String| s.starts_with("id")), "{:?}", c.suspect);
+	}
+
+	#[test]
 	fn quest_ids_no_quest_has_are_not_counted() {
 		let Prepared::Ok(c) = prep(format!("{HEAD}complete\t0\t364\ncomplete\t1\t{}\ncomplete\t2\t0\n", plausible::MAX_ID)) else { panic!("stored") };
 		assert_eq!(c.quests, BTreeSet::from([364]));

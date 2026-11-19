@@ -34,6 +34,8 @@ PolestarRecorderDB = {
 	optout = true,             -- only after /psrec off: the client's share flag does not turn recording on; /psrec on clears it
 	exploreOff = true,         -- only after /psrec explore off: explorer mode stays off (see "Explorer mode"); /psrec explore on clears it
 	exploreSaid = true,        -- explorer mode's one-time chat note was shown
+	simOn = true,              -- only after /psrec sim on: sim telemetry (see "Sim telemetry")
+	simlog = { "pull\t17949592104\tlq4i7teudb\t70\t...", ... }, -- the sim records' local copy (see "Sim telemetry")
 	install = "k3j9x0q2m7ab",  -- 12 random base-36 characters, made once per WoW account folder
 	seq = 41,                  -- last chunk number used
 	acked = 37,                -- highest chunk Polestar Client confirmed (from Ack.lua), kept for display
@@ -281,6 +283,17 @@ Explorer mode (only in Forever's new places; see "Explorer mode")
 | `where` | npcKind, npcId, subzoneText, indoors (1/0) | an `offer`, `accept` or `turnin` window: the subzone text there (`GetSubZoneText`) and whether the player stood indoors; once per NPC or object per session |
 | `open` | spellId, P, targetKind, targetId | the player opened a world object (an "Opening" cast: the client's lock-opening spells, by id or by that name in the client's language), at the player's position; the target is the object the client names as the soft-interact target, when it does (only `o`/`c`). At most 20 a minute |
 
+Sim telemetry (only after `/psrec sim on`; see "Sim telemetry"). Amounts are
+health or power points, times tenths of a second where the field says
+`tenths` or `dt`, else seconds. Empty = not readable (secret) or not known.
+
+| Kind | Fields | When |
+|---|---|---|
+| `regen` | res (`h` health, `m` mana), state, level, spirit, intellect, max, count, sum, lo, hi, gaps, rate, rate5 | out of combat, the gains of one resource in one state, at most a minute's worth per record (written when the state, Spirit, Intellect, level or pool size changes, after 60 s, at combat and at logout; `dt` is the first gain). `state` `n` natural, `5` mana within 5 s of spending mana (the five-second rule), `e` while a Food (health) or Drink (mana) aura is up, `a` while the player channels (bandages, Evocation), `h` maybe a heal (the player's own cast within 2 s, a Renew/Rejuvenation/Regrowth aura, or another unit's helpful aura of at most 60 s). `spirit`/`intellect` effective (`UnitStat`), `max` the pool, `count` gains, `sum`/`lo`/`hi` their total, smallest and largest, `gaps` = `tenths:count` the time between consecutive gains below a full pool in half-second bins (300 = 30 s or more), `rate`/`rate5` the client's own regen per second ×10 (`GetHealthRegen`; `GetManaRegen` base and while casting) |
+| `meal` | kind (`f` food, `d` drink, `b` both), seconds, level, hp0, hp1, hpMax, mp0, mp1, mpMax | a Food/Drink aura ends: health and mana when it started and ended (the player's rest thresholds) |
+| `pull` | tenths, level, hp0, hpMin, hp1, hpMax, powerType, pw0, pwMin, pw1, pwMax, kills, xp, died, npcId, npcLevel, cls, creatureType, caster, mobs, mobsHow, casts, items, gap, ate, restSeconds, absorb, secret | one per combat (`PLAYER_REGEN_DISABLED` to `ENABLED`), written 3.5 s after it at its end (`dt`). Health and the player's power (`powerType` 0 mana, 1 rage, 3 energy) at the start, lowest, end; `kills`/`xp` the `kill` records (not tapped by others) from 1 s before to 1 s after it; `died` 1 on `PLAYER_DEAD` in it; the hostile creature targeted out of combat at most 30 s before (`npcId`, `npcLevel`, `cls` as `kill`, `creatureType` the client's localised name, `caster` 1 when it has mana); `mobs` the most hostile nameplate units at once with the player on their threat list (`mobsHow` `t`), or in combat at all when threat is secret (`c`), empty when unreadable or nameplates are off; `casts` = `spellId:count` of the player's successful casts (0 = secret), `items` = `itemId:count` used (at most 24 each); `gap` seconds since the previous pull ended (empty for a session's first), `ate` the meals' kinds and `restSeconds` their seconds since then; `absorb` 1 when a Power Word: Shield, Mana Shield, Ice Barrier or Sacrifice aura was seen; `secret` the letters of what the client kept secret in it: `h` health, `p` power, `a` auras, `n` nameplate threat, `c` cast spells, `s` stats, `t` the target |
+| `hit` | level, armor, absorb, mobs, npcId, npcLevel, hits, more, excluded | right after a `pull` with health readable, at most one hostile (`mobs` 0, 1 or unknown) and a health loss: `hits` = `dt:amount` per loss (tenths of a second since the previous loss, the first since the pull's start; at most 40), `more` losses beyond those, `excluded` losses within 0.5 s of the player's own Life Tap, Bloodrage or a Hellfire channel; `armor` effective at the start (`UnitArmor`). Losses are net of heals in the same update and hidden by absorbs (`absorb`) |
+
 ## Explorer mode
 
 Explorer mode (Recorder 0.3.6 and later) makes the Recorder note more about
@@ -334,6 +347,46 @@ and the player is in one of those places, and nowhere else.
   So the server learns the kinds first, then a Polestar Client that knows
   them (0.1.6 and later), and only then does explorer mode data reach the
   archive.
+
+## Sim telemetry
+
+Sim telemetry (`addon/Polestar_Recorder/Sim.lua`) records what a leveling
+simulator needs to check its model against play: regeneration out of combat
+and its Spirit and Intellect, eating and drinking with the health and mana
+they start and stop at, each fight's length, cost, kills and deaths, and the
+damage one mob's swings do against the player's armor.
+
+- **Off by default.** `/psrec sim on` turns it on (kept per account as
+  `simOn`), `/psrec sim off` off; it records only while recording is on.
+  `/psrec sim` shows the state, the local copy's size, and which values the
+  client keeps secret right now (try it in and out of combat).
+- **Privacy.** Only the player's own values (health, power, stats, armor,
+  regen rates, the spells and items the player used) and the creature data
+  `kill` and `unit` already hold (creature id, level, rank, its type name
+  and whether it has mana). Nothing on the "never collected" list; no other
+  player's anything (the group size is the `group` record's).
+- **Secret values.** Forever's combat log is closed to addons and the
+  client makes values secret in restricted contexts (combat, instances):
+  `UnitHealth` (always tagged `SecretReturns`), `UnitPower`, `UnitStat`,
+  `UnitArmor`, aura data, unit identity and comparison, threat, and
+  `UNIT_SPELLCAST_SUCCEEDED`'s spell id. A secret read leaves its field
+  empty, never a guess, and the pull's `secret` says which. When health is
+  secret in combat there is no `hit` and the pull has only its start (when
+  readable) and end. The client has no API for sitting.
+- **Size.** About 100 bytes a `regen` (at most two a minute out of combat),
+  150 a `pull`, up to 400 a `hit`: a busy hour of questing adds about
+  25 KiB.
+- **Local copy.** Each record also goes into `simlog` (per account), as
+  `kind`, the server time in tenths of a second, the character id, then the
+  record's fields, newest kept up to 512 KiB (about 20 hours), because the
+  chunks are deleted once Polestar Client has uploaded them and an older
+  client or server drops kinds it does not know. A `ctx` line (race and
+  class tokens, level) opens each session there, since the `session` record
+  may be gone with its chunk. `/psrec sim clear` and `/psrec clear` delete
+  it.
+- **Compatibility.** Each is a new record kind, so a reader that does not
+  know it skips it; an ingest server before these kinds drops them (and
+  rejects a chunk with more than 64 of them).
 
 ## Upload API (`https://data.polestar.guide/v1`)
 

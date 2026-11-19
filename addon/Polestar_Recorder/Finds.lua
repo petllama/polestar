@@ -389,6 +389,7 @@ local function finish(k)
 	if ns.RecAt(k.t, "kill", k.npc, k.lvl, ns.Cls(k.cls), k.p, k.xp, k.rested, tapped, k.q[1] and concat(k.q, ";") or nil) then
 		local uid = spawnUid(k.guid)
 		if uid then ns.RecAt(k.t, "spawn", k.npc, uid, k.p) end
+		if ns.SimKill then ns.SimKill(k.t, k.xp, tapped) end
 	end
 end
 

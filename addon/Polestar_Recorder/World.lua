@@ -431,6 +431,7 @@ local usedItem, usedAt = nil, -math.huge
 local function useItem(id)
 	id = Num(id)
 	if id then usedItem, usedAt = id, GetTime() end
+	if id and ns.SimItem then ns.SimItem(id) end
 end
 
 if C_Container and type(C_Container.UseContainerItem) == "function" then

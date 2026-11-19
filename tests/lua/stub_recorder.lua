@@ -118,7 +118,55 @@ function UnitXP() return W.xp end
 function UnitXPMax() return W.xpMax or 400 end
 function GetXPExhaustion() return W.rested end -- nil when not rested, as in the client
 function GetMoney() return W.money or 0 end
-function UnitAffectingCombat(unit) return unit == "player" and W.combat == true end
+function UnitAffectingCombat(unit)
+	if unit == "player" then return W.combat == true end
+	local u = W.units[unit]
+	return u ~= nil and u.combat == true
+end
+-- The player's pools, stats and armor (Sim.lua); any of them may be stub.secret().
+-- W.power / W.powerMax are by power type (0 mana, 1 rage, 3 energy).
+W.hp, W.hpMax = 100, 100
+W.power, W.powerMax, W.powerType = { [0] = 100 }, { [0] = 100 }, 0
+W.stats = { 20, 20, 20, 20, 20 } -- Strength, Agility, Stamina, Intellect, Spirit (effective)
+W.armor = 50
+W.regen = { health = 0, mana = 0, manaCasting = 0 } -- GetHealthRegen, GetManaRegen
+function UnitHealth(unit) if unit == "player" then return W.hp end return 0 end
+function UnitHealthMax(unit) if unit == "player" then return W.hpMax end return 0 end
+-- Units may carry ptype (UnitPowerType), pmax (UnitPowerMax), ctype (UnitCreatureType), threat
+-- (UnitThreatSituation("player", unit): nil off its threat list) and combat (UnitAffectingCombat).
+function UnitPowerType(unit)
+	if unit == "player" then return W.powerType end
+	local u = W.units[unit]
+	return u and u.ptype or 1
+end
+function UnitPower(unit, pt)
+	if unit == "player" then return W.power[pt or W.powerType] or 0 end
+	return 0
+end
+function UnitPowerMax(unit, pt)
+	if unit == "player" then return W.powerMax[pt or W.powerType] or 0 end
+	local u = W.units[unit]
+	return u and u.pmax or 0
+end
+function UnitStat(unit, i)
+	if unit ~= "player" then return 0, 0 end
+	local v = W.stats[i]
+	return v, v, 0, 0
+end
+function UnitArmor(unit)
+	if unit ~= "player" then return 0, 0 end
+	return W.armor, W.armor, W.armor
+end
+function UnitCreatureType(unit)
+	local u = W.units[unit]
+	return u and u.ctype or nil
+end
+function UnitThreatSituation(_, unit)
+	local u = W.units[unit]
+	return u and u.threat or nil
+end
+function GetHealthRegen() return W.regen.health, W.regen.health end
+function GetManaRegen() return W.regen.mana, W.regen.manaCasting end
 function UnitIsAFK(unit) return unit == "player" and W.afk == true end
 function UnitIsDeadOrGhost(unit) return unit == "player" and W.dead == true end
 function UnitRace() return W.player.race, W.player.race, 1 end

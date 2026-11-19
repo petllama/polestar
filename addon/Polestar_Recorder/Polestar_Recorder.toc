@@ -46,6 +46,7 @@ Finds.lua
 Progress.lua
 Route.lua
 Trail.lua
+Sim.lua
 Spots.lua
 Panel.lua
 Commands.lua

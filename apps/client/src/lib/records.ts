@@ -61,6 +61,10 @@ const KINDS: Record<string, string> = {
 	engage: 'Boss pull',
 	where: 'Where a quest giver stands',
 	open: 'Object opened',
+	regen: 'Regeneration',
+	meal: 'Meal',
+	pull: 'Fight',
+	hit: 'Damage taken',
 };
 
 const FIELDS: Record<string, string> = {
