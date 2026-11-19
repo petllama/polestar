@@ -8,3 +8,7 @@ section: players
   kills, XP, deaths, your casts, the target) and the damage one mob's swings
   did. Only your own character's values and the creatures you fight.
   `/psrec sim` shows which of these the game keeps secret right now.
+  It also keeps your character sheet (stats, spell power, crit, weapons, the
+  ids of your gear and your talents) after each level, talent point and gear
+  change, your pet's health and deaths, and what led to each of your deaths
+  and how long it took to be back.

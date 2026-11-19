@@ -186,11 +186,40 @@ kinds! {
 		"pw0": F::OU, "pwMin": F::OU, "pw1": F::OU, "pwMax": F::OU, "kills": F::OU, "xp": F::OU, "died": BOOL,
 		"npcId": F::OU, "npcLevel": F::OI, "cls": CLS, "creatureType": F::Name(MAX_PLACE), "caster": F::Tok(&["1", "0", ""]),
 		"mobs": F::OU, "mobsHow": F::Tok(&["t", "c", ""]), "casts": ITEMS, "items": ITEMS, "gap": F::OU, "ate": F::Flags("fdb"),
-		"restSeconds": F::OU, "absorb": F::Tok(&["1", "0", ""]), "secret": F::Flags("hpancst"),
+		"restSeconds": F::OU, "absorb": F::Tok(&["1", "0", ""]), "secret": F::Flags("hpancste"),
+		// The pet's health (Recorder 0.4.1.2 on; trailing, so earlier pulls read them as empty).
+		"petHp0": F::OU, "petHpMin": F::OU, "petHp1": F::OU, "petHpMax": F::OU, "petDied": F::Tok(&["1", "0", "g", ""]),
 	],
 	Hit "hit" [
 		"level": F::OU, "armor": F::OU, "absorb": F::Tok(&["1", "0", ""]), "mobs": F::OU, "npcId": F::OU, "npcLevel": F::OI,
 		"hits": ITEMS, "more": F::OU, "excluded": F::OU,
+	],
+	// The character sheet (stats, gear as `slot:itemId:enchantId`, talents as `nodeId:rank:spellId`); fractional
+	// values (percentages, per-second rates, weapon damage and speed) x100.
+	Char "char" [
+		"level": F::OU, "class": F::Word, "race": F::Word, "stats": F::L(&[Part::OU, Part::OU]), "hpMax": F::OU, "mpMax": F::OU,
+		"armor": F::OU, "ap": F::OI, "rap": F::OI, "sp": F::L(&[Part::U, Part::I]), "heal": F::OI, "crit": F::OI, "rangedCrit": F::OI,
+		"spellCrit": F::L(&[Part::U, Part::I]), "hit": F::OI, "spellHit": F::OI, "dodge": F::OI, "parry": F::OI, "block": F::OI,
+		"manaRegen": F::OI, "manaRegenCasting": F::OI, "healthRegen": F::OI, "mainMin": F::OU, "mainMax": F::OU, "mainSpeed": F::OU,
+		"offMin": F::OU, "offMax": F::OU, "offSpeed": F::OU, "rangedMin": F::OU, "rangedMax": F::OU, "rangedSpeed": F::OU,
+		"gear": F::L(&[Part::U, Part::U, Part::OU]), "talents": F::L(&[Part::U, Part::U, Part::OU]), "why": F::Flags("oltg"),
+		"secret": F::Flags("sgt"),
+	],
+	// The pet: summoned or changed (`s`), gone (`g`), dead (`d`), at a pull's start (`b`) and end (`e`).
+	Pet "pet" [
+		"why": F::Tok(&["s", "g", "d", "b", "e"]), "npcId": F::OU, "family": F::Name(MAX_PLACE), "level": F::OU, "hp": F::OU,
+		"hpMax": F::OU, "powerType": F::OU, "pw": F::OU, "pwMax": F::OU, "happiness": F::OU, "damage": F::OU, "loyalty": F::OU,
+		"tpTotal": F::OI, "tpUsed": F::OI, "armor": F::OU, "secret": F::Flags("hpis"),
+	],
+	// A death's context (the pull so far, its target, the last losses as `dt:amount`), written when the player is
+	// alive again: `deadSeconds`, `how` (as `revive`) and Resurrection Sickness.
+	Simdeath "simdeath" [
+		"level": F::OU, "P": F::P, "subzoneText": F::Name(MAX_PLACE), "tenths": F::OU, "hp0": F::OU, "hpMax": F::OU,
+		"powerType": F::OU, "pw0": F::OU, "pwMax": F::OU, "mobs": F::OU, "npcId": F::OU, "npcLevel": F::OI, "cls": CLS,
+		"creatureType": F::Name(MAX_PLACE), "caster": F::Tok(&["1", "0", ""]), "losses": ITEMS, "items": ITEMS, "casts": ITEMS,
+		"petHp": F::OU, "petHpMax": F::OU, "petDied": F::Tok(&["1", "0", "g", ""]), "rested": F::OU, "restSince": F::OU,
+		"group": F::Tok(&["1", "0", ""]), "deadSeconds": F::OU, "how": F::Tok(&["s", "c", "r", ""]),
+		"sickness": F::Tok(&["1", "0", ""]), "secret": F::Flags("hpancstei"),
 	],
 }
 
@@ -784,6 +813,41 @@ mod tests {
 	}
 
 	#[test]
+	fn decodes_char_pet_and_simdeath() {
+		// SimChar.lua's character sheet, the pet and a death's context (docs/RECORDING.md "Sim telemetry").
+		let c = chunk(concat!(
+			"char\t1\t12\tPRIEST\tScourge\t20:22;18:18;21:30;30:35;33:40\t310\t520\t120\t44\t30\t2:12;6:20\t12\t525\t450\t2:780;6:780\t100\t\t410\t0\t0\t112\t0\t30\t1050\t1825\t260\t\t\t\t\t\t\t1:7046:;16:2208:241\t101:3:14520;102:1:\tol\t\n",
+			"pet\t2\ts\t416\tImp\t12\t180\t200\t0\t300\t300\t\t\t\t0\t0\t60\t\n",
+			"pet\t3\tg\t416\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n",
+			"pull\t4\t70\t12\t200\t170\t200\t200\t0\t300\t250\t250\t300\t1\t45\t0\t299\t3\tn\tBeast\t0\t1\tt\t585:2\t\t\t\t0\t0\te\t180\t20\t\t200\tg\n",
+			"simdeath\t5\t12\t1429\t4820\t4190\tGoldshire\t143\t300\t300\t0\t400\t500\t2\t1547\t13\tn\tBeast\t0\t20:30;19:31\t858:1\t585:7\t\t\tg\t1200\t95\t0\t74\ts\t1\th\n",
+		))
+		.unwrap();
+		assert_eq!(c.skipped_unknown, 0);
+		let k: Vec<Kind> = c.records.iter().map(|r| r.kind).collect();
+		assert_eq!(k, [Kind::Char, Kind::Pet, Kind::Pet, Kind::Pull, Kind::Simdeath]);
+		let r = &c.records;
+		assert_eq!((r[0].get("class"), r[0].list("stats").len(), r[0].list("gear")[1].clone(), r[0].get("why")), ("PRIEST", 5, vec!["16", "2208", "241"], "ol"));
+		assert_eq!(r[0].list("talents"), vec![vec!["101", "3", "14520"], vec!["102", "1", ""]]);
+		assert_eq!((r[1].get("family"), r[1].int("hpMax"), r[2].get("why")), ("Imp", Some(200), "g"));
+		assert_eq!((r[3].int("petHp0"), r[3].get("petDied"), r[3].get("secret")), (Some(180), "g", "e"));
+		assert_eq!((r[4].int("tenths"), r[4].list("losses").len(), r[4].int("deadSeconds"), r[4].get("how"), r[4].get("sickness")), (Some(143), 2, Some(74), "s", "1"));
+		// A pull written before the pet fields (28 fields) still reads, its pet fields empty.
+		let old = chunk("pull\t4\t70\t12\t200\t170\t200\t200\t0\t300\t250\t250\t300\t1\t45\t0\t299\t3\tn\tBeast\t0\t1\tt\t585:2\t\t\t\t0\t0\t\n").unwrap();
+		assert_eq!((old.records[0].int("petHp0"), old.records[0].get("petDied")), (None, ""));
+		for bad in [
+			"char\t0\t12\tPRIEST\tScourge\t20;25",
+			"char\t0\t12\tPRIEST\tScourge\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tx",
+			"pet\t0\tz",
+			"pet\t0\ts\t416\tImp\t-1",
+			"simdeath\t0\t12\t0\t5\t5",
+			"simdeath\t0\t12\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tx",
+		] {
+			assert!(chunk(bad).is_err(), "{bad}");
+		}
+	}
+
+	#[test]
 	fn rejects_each_malformed_kind() {
 		// One malformed example per kind: the whole chunk is rejected.
 		let bad = [
@@ -848,6 +912,9 @@ mod tests {
 			"meal\t0\tf\t-3",
 			"pull\t0\t70\t1\t1\t1\t1\t1\t0\t1\t1\t1\t1\t0\t0\tyes",
 			"hit\t0\t1\t1\t0\t1\t1\t1\t20;10",
+			"char\t0\t12\tPRIEST\tScourge\t20;25",
+			"pet\t0\tz",
+			"simdeath\t0\t12\t0\t5\t5",
 		];
 		let mut kinds: Vec<&str> = Vec::new();
 		for b in bad {

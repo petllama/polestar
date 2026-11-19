@@ -171,6 +171,7 @@ end)
 
 ns.On("PLAYER_DEAD", function()
 	dead, released = true, false
+	ns.ReviveHow = nil
 end)
 
 -- Released: a ghost now.
@@ -196,6 +197,7 @@ local function revived()
 	else
 		how = "c"
 	end
+	ns.ReviveHow = how -- Sim.lua's simdeath
 	ns.Rec("revive", ns.P(), how)
 end
 ns.On("PLAYER_ALIVE", revived)

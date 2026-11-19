@@ -291,8 +291,11 @@ health or power points, times tenths of a second where the field says
 |---|---|---|
 | `regen` | res (`h` health, `m` mana), state, level, spirit, intellect, max, count, sum, lo, hi, gaps, rate, rate5 | out of combat, the gains of one resource in one state, at most a minute's worth per record (written when the state, Spirit, Intellect, level or pool size changes, after 60 s, at combat and at logout; `dt` is the first gain). `state` `n` natural, `5` mana within 5 s of spending mana (the five-second rule), `e` while a Food (health) or Drink (mana) aura is up, `a` while the player channels (bandages, Evocation), `h` maybe a heal (the player's own cast within 2 s, a Renew/Rejuvenation/Regrowth aura, or another unit's helpful aura of at most 60 s). `spirit`/`intellect` effective (`UnitStat`), `max` the pool, `count` gains, `sum`/`lo`/`hi` their total, smallest and largest, `gaps` = `tenths:count` the time between consecutive gains below a full pool in half-second bins (300 = 30 s or more), `rate`/`rate5` the client's own regen per second ×10 (`GetHealthRegen`; `GetManaRegen` base and while casting) |
 | `meal` | kind (`f` food, `d` drink, `b` both), seconds, level, hp0, hp1, hpMax, mp0, mp1, mpMax | a Food/Drink aura ends: health and mana when it started and ended (the player's rest thresholds) |
-| `pull` | tenths, level, hp0, hpMin, hp1, hpMax, powerType, pw0, pwMin, pw1, pwMax, kills, xp, died, npcId, npcLevel, cls, creatureType, caster, mobs, mobsHow, casts, items, gap, ate, restSeconds, absorb, secret | one per combat (`PLAYER_REGEN_DISABLED` to `ENABLED`), written 3.5 s after it at its end (`dt`). Health and the player's power (`powerType` 0 mana, 1 rage, 3 energy) at the start, lowest, end; `kills`/`xp` the `kill` records (not tapped by others) from 1 s before to 1 s after it; `died` 1 on `PLAYER_DEAD` in it; the hostile creature targeted out of combat at most 30 s before (`npcId`, `npcLevel`, `cls` as `kill`, `creatureType` the client's localised name, `caster` 1 when it has mana); `mobs` the most hostile nameplate units at once with the player on their threat list (`mobsHow` `t`), or in combat at all when threat is secret (`c`), empty when unreadable or nameplates are off; `casts` = `spellId:count` of the player's successful casts (0 = secret), `items` = `itemId:count` used (at most 24 each); `gap` seconds since the previous pull ended (empty for a session's first), `ate` the meals' kinds and `restSeconds` their seconds since then; `absorb` 1 when a Power Word: Shield, Mana Shield, Ice Barrier or Sacrifice aura was seen; `secret` the letters of what the client kept secret in it: `h` health, `p` power, `a` auras, `n` nameplate threat, `c` cast spells, `s` stats, `t` the target |
+| `pull` | tenths, level, hp0, hpMin, hp1, hpMax, powerType, pw0, pwMin, pw1, pwMax, kills, xp, died, npcId, npcLevel, cls, creatureType, caster, mobs, mobsHow, casts, items, gap, ate, restSeconds, absorb, secret, petHp0, petHpMin, petHp1, petHpMax, petDied | one per combat (`PLAYER_REGEN_DISABLED` to `ENABLED`), written 3.5 s after it at its end (`dt`). Health and the player's power (`powerType` 0 mana, 1 rage, 3 energy) at the start, lowest, end; `kills`/`xp` the `kill` records (not tapped by others) from 1 s before to 1 s after it; `died` 1 on `PLAYER_DEAD` in it; the hostile creature targeted out of combat at most 30 s before (`npcId`, `npcLevel`, `cls` as `kill`, `creatureType` the client's localised name, `caster` 1 when it has mana); `mobs` the most hostile nameplate units at once with the player on their threat list (`mobsHow` `t`), or in combat at all when threat is secret (`c`), empty when unreadable or nameplates are off; `casts` = `spellId:count` of the player's successful casts (0 = secret), `items` = `itemId:count` used (at most 24 each); `gap` seconds since the previous pull ended (empty for a session's first), `ate` the meals' kinds and `restSeconds` their seconds since then; `absorb` 1 when a Power Word: Shield, Mana Shield, Ice Barrier or Sacrifice aura was seen; `secret` the letters of what the client kept secret in it: `h` health, `p` power, `a` auras, `n` nameplate threat, `c` cast spells, `s` stats, `t` the target, `e` the pet; `petHp0`/`petHpMin`/`petHp1`/`petHpMax` the pet's health at the start, lowest, end and its maximum, `petDied` `0` the pet lived, `1` its health reached 0 or the client called it dead, `g` it was gone (dismissed or dead out of sight) before the end, empty without a pet at the start. The pet fields came with Recorder 0.4.1.2 (trailing: earlier pulls read them as empty) |
 | `hit` | level, armor, absorb, mobs, npcId, npcLevel, hits, more, excluded | right after a `pull` with health readable, at most one hostile (`mobs` 0, 1 or unknown) and a health loss: `hits` = `dt:amount` per loss (tenths of a second since the previous loss, the first since the pull's start; at most 40), `more` losses beyond those, `excluded` losses within 0.5 s of the player's own Life Tap, Bloodrage or a Hellfire channel; `armor` effective at the start (`UnitArmor`). Losses are net of heals in the same update and hidden by absorbs (`absorb`) |
+| `char` | level, class, race, stats, hpMax, mpMax, armor, ap, rap, sp, heal, crit, rangedCrit, spellCrit, hit, spellHit, dodge, parry, block, manaRegen, manaRegenCasting, healthRegen, mainMin, mainMax, mainSpeed, offMin, offMax, offSpeed, rangedMin, rangedMax, rangedSpeed, gear, talents, why, secret | the character sheet, out of combat only (the client restricts these reads in combat; a snapshot asked for in a fight waits for its end): at `/psrec sim on` and a session's start (`why` `o`, 10 s after login), 3 s after a level up (`l`) or a talent change (`t`: `CHARACTER_POINTS_CHANGED`, `PLAYER_TALENT_UPDATE`, `TRAIT_CONFIG_UPDATED`), 10 s after the last equipment change (`g`) and then at most once in 3 minutes; never twice the same (the last one is kept per character as `PolestarRecorderCharDB.simChar`, so a reload writes none). `class`/`race` the file tokens; `stats` = `base:effective` for Strength, Agility, Stamina, Intellect, Spirit (`UnitStat`'s first two returns); `hpMax`, `mpMax` (mana; 0 without), `armor` effective; `ap`/`rap` melee and ranged attack power (base + bonus + malus); `sp` = `school:bonus` spell damage for schools 2-7 (holy, fire, nature, frost, shadow, arcane), `heal` bonus healing; `crit`, `rangedCrit`, `spellCrit` (`school:chance` per school), `hit`, `spellHit` (`GetHitModifier`, `GetSpellHitModifier`), `dodge`, `parry`, `block` in hundredths of a percent; `manaRegen`/`manaRegenCasting`/`healthRegen` the client's own regen per second ×100 (`GetManaRegen`, `GetHealthRegen`); weapon damage (`UnitDamage`, `UnitRangedDamage`) ×100 and attack speed in hundredths of a second, the off hand and ranged ones empty without that weapon; `gear` = `slot:itemId:enchantId` of each equipped item (slots 1-18 but the shirt, the enchant empty when none: only the ids, from the item link); `talents` = `nodeId:rank:spellId` of each talent node with points (the C_Traits class tree of the active config, Polestar's `Compat.TalentConfigs` when Polestar is loaded; at most 100); `why` the reasons (`o`, `l`, `t`, `g`); `secret` `s` stats, `g` gear, `t` talents unreadable. About 600–1,100 bytes |
+| `pet` | why, npcId, family, level, hp, hpMax, powerType, pw, pwMax, happiness, damage, loyalty, tpTotal, tpUsed, armor, secret | the player's pet (any class): `why` `s` summoned, changed, revived or seen at a session's start or `/psrec sim on`, `b`/`e` a pull's start and end, `d` it died (health 0 or `UnitIsDead`), `g` gone (only `npcId` then). `npcId` from the pet's GUID (the demon's or the tamed beast's creature id), `family` `UnitCreatureFamily` (localised), `happiness` 1–3 and `damage` the damage percentage it gives (`GetPetHappiness`, hunters), `loyalty` the number in the client's loyalty text (`GetPetLoyalty`), `tpTotal`/`tpUsed` training points (`GetPetTrainingPoints`), `armor` effective; `secret` `h` health, `p` power, `i` identity (GUID, family, level), `s` the rest. About 60 bytes |
+| `simdeath` | level, P, subzoneText, tenths, hp0, hpMax, powerType, pw0, pwMax, mobs, npcId, npcLevel, cls, creatureType, caster, losses, items, casts, petHp, petHpMax, petDied, rested, restSince, group, deadSeconds, how, sickness, secret | a death's context, a new kind beside `death` (which keeps its meaning): taken at `PLAYER_DEAD`, written when the player is alive again (`dt`; `PLAYER_ALIVE` or `PLAYER_UNGHOST` while no longer dead or a ghost), or at logout while still dead (then `deadSeconds`, `how` and `sickness` are empty). `P` and `subzoneText` where the player died; from the running pull (or one that ended within 2 s): `tenths` since its start, `hp0`/`hpMax`/`powerType`/`pw0`/`pwMax` at its start, `mobs`, its target (`npcId` .. `caster` as `pull`), `losses` its last 5 health losses (`dt:amount` as `hit`), `items`/`casts` used in it (as `pull`), `petDied`; all empty for a death out of combat. `petHp`/`petHpMax` at the death; `rested` rested XP (`GetXPExhaustion`); `restSince` seconds since the last meal ended (this session); `group` 1 in a party or raid (`IsInGroup`); `deadSeconds` from the death to alive again (the corpse run or the spirit healer); `how` as `revive`; `sickness` 1 when Resurrection Sickness (spell 15007) is on the player 1.5 s after (0 not, empty unreadable); `secret` the pull's letters and the snapshot's own. About 150 bytes |
 
 ## Explorer mode
 
@@ -353,15 +356,21 @@ and the player is in one of those places, and nowhere else.
 Sim telemetry (`addon/Polestar_Recorder/Sim.lua`) records what a leveling
 simulator needs to check its model against play: regeneration out of combat
 and its Spirit and Intellect, eating and drinking with the health and mana
-they start and stop at, each fight's length, cost, kills and deaths, and the
-damage one mob's swings do against the player's armor.
+they start and stop at, each fight's length, cost, kills and deaths, the
+damage one mob's swings do against the player's armor, the character sheet
+(stats, spell power, crit, weapons, gear and talents: the gear budget per
+level), the pet's health and deaths, and what led to each death and how long
+it took to be back.
 
 - **Off by default.** `/psrec sim on` turns it on (kept per account as
   `simOn`), `/psrec sim off` off; it records only while recording is on.
   `/psrec sim` shows the state, the local copy's size, and which values the
   client keeps secret right now (try it in and out of combat).
 - **Privacy.** Only the player's own values (health, power, stats, armor,
-  regen rates, the spells and items the player used) and the creature data
+  regen rates, the spells and items the player used, the equipped items' and
+  enchants' ids and the talent nodes, never an item's name or text), the
+  player's own pet (its creature id, family and numbers), whether the player
+  is in a group (never who) and the creature data
   `kill` and `unit` already hold (creature id, level, rank, its type name
   and whether it has mana). Nothing on the "never collected" list; no other
   player's anything (the group size is the `group` record's).
@@ -374,8 +383,14 @@ damage one mob's swings do against the player's armor.
   secret in combat there is no `hit` and the pull has only its start (when
   readable) and end. The client has no API for sitting.
 - **Size.** About 100 bytes a `regen` (at most two a minute out of combat),
-  150 a `pull`, up to 400 a `hit`: a busy hour of questing adds about
-  25 KiB.
+  150 a `pull` (20 more with a pet), up to 400 a `hit`, 60 a `pet` (two a
+  pull with a pet), up to about 1.1 KiB a `char` (a few an hour while
+  leveling: a level, a talent point, new gear; never the same twice) and 150
+  a `simdeath`: a busy hour of questing adds about 25 KiB, 35 KiB with a pet.
+- **Unavailable values.** A client without a function (no pet happiness for
+  a warlock, no off hand) leaves its field empty; the record never guesses.
+  `char` waits for the end of a fight because the stat functions are
+  `SecretWhenUnitStatsRestricted`.
 - **Local copy.** Each record also goes into `simlog` (per account), as
   `kind`, the server time in tenths of a second, the character id, then the
   record's fields, newest kept up to 512 KiB (about 20 hours), because the
@@ -386,7 +401,9 @@ damage one mob's swings do against the player's armor.
   it.
 - **Compatibility.** Each is a new record kind, so a reader that does not
   know it skips it; an ingest server before these kinds drops them (and
-  rejects a chunk with more than 64 of them).
+  rejects a chunk with more than 64 of them). The pet fields of `pull` are
+  trailing fields added before any reader shipped `pull`; a reader of this
+  version reads an older `pull` with them empty.
 
 ## Upload API (`https://data.polestar.guide/v1`)
 

@@ -130,8 +130,17 @@ W.power, W.powerMax, W.powerType = { [0] = 100 }, { [0] = 100 }, 0
 W.stats = { 20, 20, 20, 20, 20 } -- Strength, Agility, Stamina, Intellect, Spirit (effective)
 W.armor = 50
 W.regen = { health = 0, mana = 0, manaCasting = 0 } -- GetHealthRegen, GetManaRegen
-function UnitHealth(unit) if unit == "player" then return W.hp end return 0 end
-function UnitHealthMax(unit) if unit == "player" then return W.hpMax end return 0 end
+-- Other units (the pet) may carry hp, hpMax, pw (UnitPower), armor and family (UnitCreatureFamily).
+function UnitHealth(unit)
+	if unit == "player" then return W.hp end
+	local u = W.units[unit]
+	return u and u.hp or 0
+end
+function UnitHealthMax(unit)
+	if unit == "player" then return W.hpMax end
+	local u = W.units[unit]
+	return u and u.hpMax or 0
+end
 -- Units may carry ptype (UnitPowerType), pmax (UnitPowerMax), ctype (UnitCreatureType), threat
 -- (UnitThreatSituation("player", unit): nil off its threat list) and combat (UnitAffectingCombat).
 function UnitPowerType(unit)
@@ -141,22 +150,68 @@ function UnitPowerType(unit)
 end
 function UnitPower(unit, pt)
 	if unit == "player" then return W.power[pt or W.powerType] or 0 end
-	return 0
+	local u = W.units[unit]
+	return u and u.pw or 0
 end
 function UnitPowerMax(unit, pt)
 	if unit == "player" then return W.powerMax[pt or W.powerType] or 0 end
 	local u = W.units[unit]
 	return u and u.pmax or 0
 end
+-- W.statsBase: UnitStat's first return (the base), else the effective value.
 function UnitStat(unit, i)
 	if unit ~= "player" then return 0, 0 end
 	local v = W.stats[i]
-	return v, v, 0, 0
+	return W.statsBase and W.statsBase[i] or v, v, 0, 0
 end
 function UnitArmor(unit)
-	if unit ~= "player" then return 0, 0 end
+	if unit ~= "player" then
+		local u = W.units[unit]
+		local a = u and u.armor or 0
+		return a, a, a
+	end
 	return W.armor, W.armor, W.armor
 end
+function UnitCreatureFamily(unit)
+	local u = W.units[unit]
+	return u and u.family or nil
+end
+-- The pet frame's numbers: W.pet = { happiness, damage, loyalty (text), tpTotal, tpUsed }.
+function GetPetHappiness()
+	local p = W.pet
+	if not p or not p.happiness then return nil end
+	return p.happiness, p.damage, 0
+end
+function GetPetLoyalty() return W.pet and W.pet.loyalty or nil end
+function GetPetTrainingPoints()
+	local p = W.pet
+	if not p or not p.tpTotal then return 0, 0 end
+	return p.tpTotal, p.tpUsed
+end
+-- The character sheet (SimChar.lua): W.sheet holds every value; W.inventory[slot] item links.
+W.sheet = {
+	ap = { 40, 5, 0 }, rap = { 30, 0, 0 }, sp = {}, heal = 0, crit = 5.25, rangedCrit = 4.5, spellCrit = {}, hit = 0, spellHit = 0,
+	dodge = 4.1, parry = 5, block = 0, damage = { 10.5, 18.25, 0, 0 }, speed = { 2.6 }, ranged = { 0, 0, 0 },
+}
+W.inventory = {}
+local function sheet(k, i) local v = W.sheet[k]; if i then return type(v) == "table" and v[i] or nil end return v end
+function UnitAttackPower() local v = W.sheet.ap return v[1], v[2], v[3] end
+function UnitRangedAttackPower() local v = W.sheet.rap return v[1], v[2], v[3] end
+function GetSpellBonusDamage(school) return sheet("sp", school) or 0 end
+function GetSpellBonusHealing() return sheet("heal") end
+function GetCritChance() return sheet("crit") end
+function GetRangedCritChance() return sheet("rangedCrit") end
+function GetSpellCritChance(school) return sheet("spellCrit", school) or 0 end
+function GetHitModifier() return sheet("hit") end
+function GetSpellHitModifier() return sheet("spellHit") end
+function GetDodgeChance() return sheet("dodge") end
+function GetParryChance() return sheet("parry") end
+function GetBlockChance() return sheet("block") end
+function UnitDamage() local d = W.sheet.damage return d[1], d[2], d[3], d[4], 0, 0, 1 end
+function UnitAttackSpeed() local s = W.sheet.speed return s[1], s[2] end
+function UnitRangedDamage() local r = W.sheet.ranged return r[1], r[2], r[3], 0, 0, 1 end
+function GetInventoryItemLink(unit, slot) if unit == "player" then return W.inventory[slot] end end
+function IsInGroup() return W.group.members > 0 end
 function UnitCreatureType(unit)
 	local u = W.units[unit]
 	return u and u.ctype or nil
@@ -602,8 +657,11 @@ end
 
 C_UnitAuras = {}
 W.auras = {} -- the player's helpful auras: { auraInstanceID, name }
+W.debuffs = {} -- the player's harmful auras, the same way
 function C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
-	if unit ~= "player" or filter ~= "HELPFUL" then return nil end
+	if unit ~= "player" then return nil end
+	if filter == "HARMFUL" then return W.debuffs[i] end
+	if filter ~= "HELPFUL" then return nil end
 	return W.auras[i]
 end
 

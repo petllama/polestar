@@ -82,7 +82,7 @@ end
 -- keeps secret right now (try it in and out of combat).
 local READS = {
 	{ "h", "health" }, { "p", "power" }, { "s", "stats and armor" }, { "a", "auras" },
-	{ "t", "target" }, { "n", "nameplate threat" }, { "c", "own casts" },
+	{ "t", "target" }, { "n", "nameplate threat" }, { "c", "own casts" }, { "e", "pet" },
 }
 
 commands.sim = function(rest)
@@ -92,6 +92,7 @@ commands.sim = function(rest)
 		ns.Print(L["sim telemetry %s"]:format(sub == "on" and "|cff4fd18f" .. L["on"] .. "|r" or "|cffd14f4f" .. L["off"] .. "|r"))
 		if sub == "on" then
 			ns.Print(L["Records regeneration, meals, pulls and the damage you take, for leveling simulators. Only your own character's values and the creatures you fight."])
+			ns.Print(L["Also your character's stats, gear and talents, your pet, and what led to each death."])
 			if not ns.IsEnabled() then ns.Print(L["recording is off; /psrec on first"]) end
 		end
 		return

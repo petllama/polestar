@@ -13,7 +13,15 @@
 --     once, the player's own casts and items, the time since the previous
 --     pull and the eating or drinking in between;
 --   - `hit`: the player's health losses in a pull against one mob (the mob's
---     swings: time since the previous loss and the amount), with armor.
+--     swings: time since the previous loss and the amount), with armor;
+--   - `pet`: the pet's family, level, pools, happiness, loyalty, training
+--     points and armor when it is summoned or changes, goes, dies, and at
+--     each pull's start and end (the pull also keeps the pet's health);
+--   - `simdeath`: a death's context (the pull so far, its target, the last
+--     health losses, items used, the pet, rested XP, the last meal, group)
+--     written once the player is alive again, with the seconds it took and
+--     how (spirit healer, corpse, resurrected) and Resurrection Sickness.
+-- The `char` snapshot (stats, gear, talents) is SimChar.lua's.
 -- Each record also goes into a local copy (PolestarRecorderDB.simlog, at
 -- most SIMLOG_BYTES) that an upload's acknowledgement does not delete: the
 -- uploader's library may not know these kinds yet.
@@ -33,8 +41,11 @@
 -- UnitAffectingCombat, UnitThreatSituation, C_UnitAuras.GetAuraDataByIndex,
 -- NAME_PLATE_UNIT_ADDED / REMOVED, UNIT_HEALTH, UNIT_POWER_FREQUENT,
 -- UNIT_SPELLCAST_SUCCEEDED, UNIT_SPELLCAST_CHANNEL_START / STOP,
--- PLAYER_REGEN_DISABLED / ENABLED, PLAYER_DEAD. The client has no API for
--- sitting, so `regen` cannot tell sitting from standing.
+-- PLAYER_REGEN_DISABLED / ENABLED, PLAYER_DEAD, PLAYER_ALIVE, PLAYER_UNGHOST,
+-- UNIT_PET, UnitCreatureFamily, UnitIsDead, GetPetHappiness (happiness,
+-- damage percentage), GetPetLoyalty (a text), GetPetTrainingPoints (total,
+-- spent), GetXPExhaustion, IsInGroup, GetSubZoneText. The client has no API
+-- for sitting, so `regen` cannot tell sitting from standing.
 
 local ADDON, ns = ...
 local L = ns.L
@@ -52,6 +63,10 @@ local KILL_SLACK = 1 -- a kill this long before the pull or after its end counts
 local TARGET_FRESH = 30 -- a target read this long before combat is the pull's target
 local PLATE_TICK = 0.5 -- seconds between nameplate counts in combat
 local HIT_CAP = 40 -- most health losses listed per pull
+local LOSS_CAP = 5 -- the last health losses a `simdeath` lists
+local SICKNESS_SPELL = 15007 -- Resurrection Sickness
+local SICKNESS_DELAY = 1.5 -- seconds after alive again before the debuff is looked for
+local DEATH_PULL_SLACK = 2 -- a pull that ended this long before PLAYER_DEAD is the death's
 local CAST_CAP = 24 -- most distinct spells (and items) listed per pull
 local GAP_CAP = 300 -- gaps (tenths of a second) above this share one bin
 local SIMLOG_BYTES = 512 * 1024 -- the local copy keeps the newest records up to this size
@@ -121,7 +136,11 @@ function ns.SetSim(v)
 	local was = on
 	on = v and true or false
 	save()
-	if on and not was and ns.Recording() then keepContext() end
+	if on and not was and ns.Recording() then
+		keepContext()
+		if ns.SimCharNow then ns.SimCharNow("o") end
+		ns.SimPetNow()
+	end
 end
 
 function ns.SimStats()
@@ -190,11 +209,14 @@ end)
 local pull -- the running pull, or nil
 local readable = {} -- letter -> true (read) | false (secret) at the last try, for /psrec sim
 
+local sink -- a snapshot's own secret letters while it reads (pet, simdeath), or nil
+
 local function note(letter, v)
 	if v == nil then return nil end
 	if not usable(v) then
 		readable[letter] = false
 		if pull then pull.secret[letter] = true end
+		if sink then sink[letter] = true end
 		return nil
 	end
 	readable[letter] = true
@@ -209,6 +231,18 @@ local function call(letter, fn, ...)
 end
 
 local function round(v) return v and floor(v + 0.5) or nil end
+
+-- Secret letters of a set, in the documented order.
+local SECRET_ORDER = { "h", "p", "a", "n", "c", "s", "t", "e", "i" }
+
+local function flags(set)
+	local s = ""
+	for _, c in ipairs(SECRET_ORDER) do
+		if set[c] then s = s .. c end
+	end
+	return s
+end
+
 
 -- A number read, rounded: records hold whole numbers.
 local function num(letter, fn, ...)
@@ -258,6 +292,7 @@ end
 ---------------------------------------------------------------------------
 
 local meal = nil -- { kind, at, hp0, mp0 } while eating or drinking
+local lastMealEnd = nil -- GetTime() a meal last ended
 local hotUntil = -math.huge -- a heal over time may tick until then
 local absorbing = nil -- true/false at the last readable scan, nil unknown
 local mealsSince = { flags = "", seconds = 0 } -- meals since the last pull ended
@@ -276,6 +311,7 @@ local function endMeal(now)
 		if not hasFlag(mealsSince.flags, c) then mealsSince.flags = mealsSince.flags .. c end
 	end
 	mealsSince.seconds = mealsSince.seconds + secs
+	lastMealEnd = now
 end
 
 local function scanAuras()
@@ -477,6 +513,118 @@ local function low(p, key, v)
 	if v ~= nil and (p[key] == nil or v < p[key]) then p[key] = v end
 end
 
+---------------------------------------------------------------------------
+-- The pet: `pet` snapshots, and its health in the pull. Its reads go
+-- through petRead: a secret value sets the pull's `e` and the snapshot's
+-- own letter (h health, p power, i identity, s stats).
+---------------------------------------------------------------------------
+
+local petSeen = nil -- { guid, npc, dead } of the pet last seen, nil without one
+
+local function petRead(letter, fn, ...)
+	if type(fn) ~= "function" then return nil end
+	local ok, a, b, c = pcall(fn, ...)
+	if not ok then return nil end
+	local out = { a, b, c }
+	for i = 1, 3 do
+		local v = out[i]
+		if v ~= nil and not usable(v) then
+			out[i] = nil
+			readable.e = false
+			if pull then pull.secret.e = true end
+			if sink then sink[letter] = true end
+		elseif v ~= nil then
+			readable.e = true
+		end
+	end
+	return out[1], out[2], out[3]
+end
+
+local function petNum(v) return type(v) == "number" and round(v) or nil end
+
+local function petExists()
+	local ok, v = pcall(UnitExists or function() end, "pet")
+	return ok and usable(v) and v == true
+end
+
+local function petHealth()
+	local cur, mx = petRead("h", UnitHealth, "pet"), petRead("h", UnitHealthMax, "pet")
+	return petNum(cur), petNum(mx)
+end
+
+-- A name field: no `|`, tabs or newlines, at most 100 characters.
+local function placeName(v)
+	if not Str(v) then return nil end
+	local s = v:gsub("[|\t\r\n]", " ")
+	return s:sub(1, 100)
+end
+
+local function petSnapshot(why)
+	local s = {}
+	sink = s
+	local _, npc = ns.ParseGUID(petRead("i", UnitGUID, "pet"))
+	local family = placeName(petRead("i", UnitCreatureFamily, "pet"))
+	local lvl = petNum(petRead("i", UnitLevel, "pet"))
+	local hp, hpMax = petHealth()
+	local pt = petNum(petRead("p", UnitPowerType, "pet"))
+	local pw, pwMax
+	if pt then pw, pwMax = petNum(petRead("p", UnitPower, "pet", pt)), petNum(petRead("p", UnitPowerMax, "pet", pt)) end
+	local happy, dmg = petRead("s", GetPetHappiness)
+	local loyalty = petRead("s", GetPetLoyalty)
+	loyalty = Str(loyalty) and tonumber(loyalty:match("%d+")) or nil
+	local tpTotal, tpUsed = petRead("s", GetPetTrainingPoints)
+	local base, eff = petRead("s", UnitArmor, "pet")
+	sink = nil
+	emit(GetTime(), "pet", why, npc, family, lvl, hp, hpMax, pt, pw, pwMax, petNum(happy), petNum(dmg), loyalty,
+		petNum(tpTotal), petNum(tpUsed), petNum(eff) or petNum(base), flags(s))
+end
+
+-- UNIT_PET (and a session's start): a new pet, or the pet gone.
+local function petChanged()
+	if petExists() then
+		local g = Str(petRead("i", UnitGUID, "pet"))
+		if not petSeen or petSeen.dead or (g and g ~= petSeen.guid) then
+			local _, npc = ns.ParseGUID(g)
+			petSeen = { guid = g, npc = npc }
+			petSnapshot("s")
+			local p = pull
+			if p and not p.hadPet then
+				p.hadPet, p.petDied = true, "0"
+				p.petHp0, p.petHpMax = petHealth()
+				p.petHpMin = p.petHp0
+			end
+		end
+	elseif petSeen then
+		local p = pull
+		if p and p.hadPet and p.petDied == "0" then p.petDied = "g" end
+		emit(GetTime(), "pet", "g", petSeen.npc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "")
+		petSeen = nil
+	end
+end
+
+-- UNIT_HEALTH of the pet: its lowest in the pull, its death (health 0 or
+-- UnitIsDead), and its revival.
+local function petHealthChanged()
+	if not petExists() then return end
+	local cur, mx = petHealth()
+	local p = pull
+	if p and p.hadPet then
+		low(p, "petHpMin", cur)
+		if mx then p.petHpMax = mx end
+	end
+	local dead = petRead("i", UnitIsDead, "pet")
+	if cur == 0 or dead == true then
+		if petSeen and not petSeen.dead then
+			petSeen.dead = true
+			if p and p.hadPet then p.petDied = "1" end
+			petSnapshot("d")
+		end
+	elseif cur and cur > 0 and petSeen and petSeen.dead then
+		petSeen.dead = false
+		petSnapshot("s")
+	end
+end
+
 local function startPull()
 	local now = GetTime()
 	for res in pairs(agg) do flushRegen(res, now) end
@@ -497,6 +645,12 @@ local function startPull()
 	p.gap = lastPullEnd and now - lastPullEnd or nil
 	p.ate, p.restSec = mealsSince.flags, mealsSince.seconds
 	mealsSince = { flags = "", seconds = 0 }
+	if petExists() then
+		p.hadPet, p.petDied = true, "0"
+		p.petHp0, p.petHpMax = petHealth()
+		p.petHpMin = p.petHp0
+		petSnapshot("b")
+	end
 	countPlates()
 	if C_Timer and C_Timer.NewTicker then plateTicker = C_Timer.NewTicker(PLATE_TICK, countPlates) end
 end
@@ -510,13 +664,7 @@ local function list(t)
 	return #out > 0 and concat(out, ";") or nil
 end
 
-local function secretFlags(p)
-	local s = ""
-	for _, c in ipairs({ "h", "p", "a", "n", "c", "s", "t" }) do
-		if p.secret[c] then s = s .. c end
-	end
-	return s
-end
+local function secretFlags(p) return flags(p.secret) end
 
 local function writePull(p)
 	local t = p.target or {}
@@ -526,7 +674,8 @@ local function writePull(p)
 	if absorb ~= nil then absorb = absorb and 1 or 0 end
 	emit(p.t1, "pull", floor((p.t1 - p.t0) * 10 + 0.5), p.level, p.hp0, p.hpMin, p.hp1, p.hpMax, p.pt, p.pw0, p.pwMin, p.pw1, p.pwMax,
 		p.kills, p.xp, p.died and 1 or 0, t.npc, t.lvl, t.cls, t.ctype, mana, p.mobs, p.mobsHow, list(p.casts), list(p.items),
-		p.gap and floor(p.gap + 0.5) or nil, p.ate, floor(p.restSec + 0.5), absorb, secretFlags(p))
+		p.gap and floor(p.gap + 0.5) or nil, p.ate, floor(p.restSec + 0.5), absorb, secretFlags(p),
+		p.petHp0, p.petHpMin, p.petHp1, p.petHpMax, p.petDied)
 	if #p.hits > 0 and (p.mobs == nil or p.mobs <= 1) then
 		emit(p.t1, "hit", p.level, p.armor, absorb, p.mobs, t.npc, t.lvl, concat(p.hits, ";"), p.more, p.selfx)
 	end
@@ -546,6 +695,18 @@ local function endPull()
 	p.pw1 = power(p.pt)
 	low(p, "hpMin", p.hp1)
 	low(p, "pwMin", p.pw1)
+	if p.hadPet and petExists() then
+		-- the pull is no longer running: its pet reads say `e` here
+		local s = {}
+		sink = s
+		local hp1, mx = petHealth()
+		sink = nil
+		if s.h then p.secret.e = true end
+		p.petHp1 = hp1
+		if mx then p.petHpMax = mx end
+		low(p, "petHpMin", hp1)
+		petSnapshot("e")
+	end
 	lastPullEnd = now
 	waiting[#waiting + 1] = p
 	C_Timer.After(PULL_DELAY, function()
@@ -608,6 +769,86 @@ local function combatHealth()
 	p.lastHp = cur
 end
 
+
+---------------------------------------------------------------------------
+-- Deaths: `simdeath`, the context taken at PLAYER_DEAD, written once the
+-- player is alive again (or at logout while still dead).
+---------------------------------------------------------------------------
+
+local deathCtx = nil
+
+local function lastLosses(hits)
+	local from = math.max(1, #hits - LOSS_CAP + 1)
+	local out = {}
+	for i = from, #hits do out[#out + 1] = hits[i] end
+	return #out > 0 and concat(out, ";") or nil
+end
+
+local function takeDeath()
+	local now = GetTime()
+	local p = pull
+	if not p then
+		local w = waiting[#waiting]
+		if w and now - w.t1 <= DEATH_PULL_SLACK then p = w end
+	end
+	local s = {}
+	sink = s
+	local d = { at = now, level = level(), P = ns.P(), sub = placeName(GetSubZoneText and GetSubZoneText()) }
+	if p then
+		d.tenths = floor((now - p.t0) * 10 + 0.5)
+		d.hp0, d.hpMax, d.pt, d.pw0, d.pwMax, d.mobs = p.hp0, p.hpMax, p.pt, p.pw0, p.pwMax, p.mobs
+		local t = p.target or {}
+		d.npc, d.npcLevel, d.cls, d.ctype = t.npc, t.lvl, t.cls, t.ctype
+		if t.mana ~= nil then d.caster = t.mana and 1 or 0 end
+		d.losses, d.items, d.casts = lastLosses(p.hits), list(p.items), list(p.casts)
+		d.petDied = p.petDied
+		for c in pairs(p.secret) do s[c] = true end
+	else
+		local _, mx = health()
+		d.hpMax = mx
+	end
+	if petExists() then d.petHp, d.petHpMax = petHealth() end
+	d.rested = round(Num(GetXPExhaustion and GetXPExhaustion()))
+	d.restSince = lastMealEnd and floor(now - lastMealEnd + 0.5) or nil
+	local okg, g = pcall(IsInGroup or function() end)
+	if okg and usable(g) and g ~= nil then d.group = g and 1 or 0 end
+	sink = nil
+	d.secret = s
+	deathCtx = d
+end
+
+-- Resurrection Sickness on the player: 1, 0, or nil when the debuffs are unreadable.
+local function sickness()
+	if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return nil end
+	local name = Str(ns.SpellName(SICKNESS_SPELL))
+	for i = 1, 40 do
+		local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HARMFUL")
+		if not ok or not a then break end
+		if not usable(a) then return nil end
+		local id, n = Num(a.spellId), Str(a.name)
+		if id == nil and n == nil then return nil end
+		if id == SICKNESS_SPELL or (name and n == name) then return 1 end
+	end
+	return 0
+end
+
+local function writeDeath(d, at, dead, how, sick)
+	emit(at, "simdeath", d.level, d.P, d.sub, d.tenths, d.hp0, d.hpMax, d.pt, d.pw0, d.pwMax, d.mobs, d.npc, d.npcLevel, d.cls,
+		d.ctype, d.caster, d.losses, d.items, d.casts, d.petHp, d.petHpMax, d.petDied, d.rested, d.restSince, d.group,
+		dead, how, sick, flags(d.secret))
+end
+
+local function alive()
+	local d = deathCtx
+	if not d then return end
+	local ok, ghost = pcall(UnitIsDeadOrGhost or function() end, "player")
+	if ok and usable(ghost) and ghost then return end
+	deathCtx = nil
+	local now = GetTime()
+	local dead, how = floor(now - d.at + 0.5), ns.ReviveHow
+	C_Timer.After(SICKNESS_DELAY, function() writeDeath(d, now, dead, how, sickness()) end)
+end
+
 ---------------------------------------------------------------------------
 -- Events
 ---------------------------------------------------------------------------
@@ -633,9 +874,26 @@ end)
 
 ns.On("PLAYER_DEAD", function()
 	if pull then pull.died = true end
+	if active() then takeDeath() end
+end)
+
+ns.On("PLAYER_ALIVE", function()
+	if active() then alive() end
+end)
+
+ns.On("PLAYER_UNGHOST", function()
+	if active() then alive() end
+end)
+
+ns.On("UNIT_PET", function(_, unit)
+	if unit == "player" and active() then petChanged() end
 end)
 
 ns.On("UNIT_HEALTH", function(_, unit)
+	if unit == "pet" and active() then
+		petHealthChanged()
+		return
+	end
 	if unit ~= "player" or not active() then return end
 	if pull then
 		combatHealth()
@@ -715,7 +973,7 @@ end)
 ns.OnSession(function()
 	agg = {}
 	last = { h = {}, m = {} }
-	pull, meal, target, lastPullEnd = nil, nil, nil, nil
+	pull, meal, target, lastPullEnd, lastMealEnd, deathCtx, petSeen = nil, nil, nil, nil, nil, nil, nil
 	mealsSince = { flags = "", seconds = 0 }
 	hotUntil, lastSpend, lastCast, selfDamageUntil, channeling = -math.huge, -math.huge, -math.huge, -math.huge, false
 	if active() then
@@ -723,6 +981,7 @@ ns.OnSession(function()
 		last.m.v, last.m.max = power(0)
 		scanAuras()
 		keepContext()
+		petChanged()
 	end
 end)
 
@@ -731,7 +990,18 @@ ns.OnLogout(function()
 	local now = GetTime()
 	for res in pairs(agg) do flushRegen(res, now) end
 	if meal then endMeal(now) end
+	-- still dead: the context without the revival
+	if deathCtx then
+		writeDeath(deathCtx, now, nil, nil, nil)
+		deathCtx = nil
+	end
 end)
+
+-- /psrec sim on: the pet as it is now.
+function ns.SimPetNow()
+	petSeen = nil
+	petChanged()
+end
 
 -- What /psrec sim shows: each read now (true readable, false secret, nil
 -- not tried or no API), and the letters of the last pull that were secret.
@@ -743,6 +1013,7 @@ function ns.SimProbe()
 	stat(5)
 	armor()
 	if UnitExists and usable(UnitExists("target")) and UnitExists("target") then call("t", UnitCreatureType, "target") end
+	if petExists() then petHealth() end
 	for token in pairs(plates) do
 		num("n", UnitThreatSituation, "player", token)
 		break

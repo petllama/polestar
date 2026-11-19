@@ -65,6 +65,9 @@ const KINDS: Record<string, string> = {
 	meal: 'Meal',
 	pull: 'Fight',
 	hit: 'Damage taken',
+	char: 'Character sheet',
+	pet: 'Pet',
+	simdeath: 'Death in detail',
 };
 
 const FIELDS: Record<string, string> = {

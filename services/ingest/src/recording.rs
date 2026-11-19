@@ -231,6 +231,25 @@ mod tests {
 	}
 
 	#[test]
+	fn char_pet_and_simdeath_records_are_stored_as_sent_and_checked() {
+		let body = concat!(
+			"char\t1\t12\tPRIEST\tScourge\t20:22;18:18;21:30;30:35;33:40\t310\t520\t120\t44\t30\t2:12\t12\t525\t450\t2:780\t100\t\t410\t0\t0\t112\t0\t30\t1050\t1825\t260\t\t\t\t\t\t\t1:7046:\t101:3:14520\to\t\n",
+			"pet\t2\ts\t416\tImp\t12\t180\t200\t0\t300\t300\t\t\t\t0\t0\t60\t\n",
+			"simdeath\t3\t12\t1429\t4820\t4190\tGoldshire\t143\t300\t300\t0\t400\t500\t2\t1547\t13\tn\tBeast\t0\t20:30\t\t\t\t\t0\t\t95\t0\t74\tc\t0\t\n",
+		);
+		let sent = format!("{HEAD}{body}");
+		let Prepared::Ok(c) = prep(sent.clone()) else { panic!("stored") };
+		let text = String::from_utf8(zstd::stream::decode_all(&c.ztext[..]).unwrap()).unwrap();
+		assert_eq!(text, sent);
+		assert!(c.suspect.is_empty(), "{:?}", c.suspect);
+		for k in ["char", "pet", "simdeath"] {
+			assert_eq!(c.kinds[k], 1, "{k}");
+		}
+		let Prepared::Rejected(r, _) = prep(format!("{HEAD}pet\t0\tz\n")) else { panic!("rejected") };
+		assert_eq!(r.reason, "record 2 (pet): field why: bad value 'z'");
+	}
+
+	#[test]
 	fn quest_ids_no_quest_has_are_not_counted() {
 		let Prepared::Ok(c) = prep(format!("{HEAD}complete\t0\t364\ncomplete\t1\t{}\ncomplete\t2\t0\n", plausible::MAX_ID)) else { panic!("stored") };
 		assert_eq!(c.quests, BTreeSet::from([364]));

@@ -574,7 +574,7 @@ fn events_of(r: &Record, t: f64, st: &mut State, known: &Known) -> Vec<Ev> {
 			e.text("guide", r, "guide").int("step", r, "step").set("reason", reason).set("how", how).pos(r);
 			e.opt("lvl", st.lvl).opt("xp", st.xp).opt("xpMax", st.xp_max).opt("rested", st.rested).set("combat", st.combat);
 		}
-		Kind::Regen | Kind::Meal | Kind::Pull | Kind::Hit => {
+		Kind::Regen | Kind::Meal | Kind::Pull | Kind::Hit | Kind::Char | Kind::Pet | Kind::Simdeath => {
 			// Sim telemetry: every field as written, numbers as numbers and lists as pairs of numbers.
 			for name in r.kind.field_names() {
 				let v = r.get(name);
@@ -953,6 +953,40 @@ mod tests {
 					"caster": 0, "mobs": 1, "mobsHow": "t", "casts": [[585, 2]], "restSeconds": 0, "absorb": 0,
 				}),
 				json!({ "e": "hit", "level": 12, "armor": 50, "absorb": 0, "mobs": 1, "npcId": 299, "npcLevel": 3, "hits": [[20, 10], [21, 9]], "more": 0, "excluded": 0 }),
+			]
+		);
+	}
+
+	#[test]
+	fn char_pet_and_simdeath_reach_the_session_events() {
+		let session = "session\t0\tabcdefghij\tScourge\tWARLOCK\tHorde\t2\t12\tenUS\t62345\t11508\t3\t\t2.0.0\t1.4.0\t\n";
+		let body = [
+			"pet\t10\tb\t416\tImp\t12\t180\t200\t0\t300\t300\t\t\t\t\t\t60\t",
+			"simdeath\t20\t12\t1429\t4820\t4190\tGoldshire\t143\t300\t300\t0\t400\t500\t2\t1547\t13\tn\tBeast\t0\t20:30;19:31\t\t\t\t\t0\t\t95\t0\t74\tc\t0\t",
+		]
+		.join("\n");
+		let src = Source { contributor: "local".into(), install: "k3j9x0q2m7ab".into(), chunks: vec![chunk(1, 1700000000, &format!("{session}{body}\n"))], maps: BTreeMap::new() };
+		let out = sessions(&[src]);
+		let ev: Vec<Value> = out[0]["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|e| e["e"] != "session")
+			.map(|e| {
+				let mut e = e.clone();
+				e.as_object_mut().unwrap().remove("t");
+				e
+			})
+			.collect();
+		assert_eq!(
+			ev,
+			[
+				json!({ "e": "pet", "why": "b", "npcId": 416, "family": "Imp", "level": 12, "hp": 180, "hpMax": 200, "powerType": 0, "pw": 300, "pwMax": 300, "armor": 60 }),
+				json!({
+					"e": "simdeath", "level": 12, "map": 1429, "x": 4820, "y": 4190, "subzoneText": "Goldshire", "tenths": 143, "hp0": 300, "hpMax": 300,
+					"powerType": 0, "pw0": 400, "pwMax": 500, "mobs": 2, "npcId": 1547, "npcLevel": 13, "cls": "n", "creatureType": "Beast", "caster": 0,
+					"losses": [[20, 30], [19, 31]], "petDied": 0, "restSince": 95, "group": 0, "deadSeconds": 74, "how": "c", "sickness": 0,
+				}),
 			]
 		);
 	}

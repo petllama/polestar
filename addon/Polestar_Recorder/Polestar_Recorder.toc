@@ -47,6 +47,7 @@ Progress.lua
 Route.lua
 Trail.lua
 Sim.lua
+SimChar.lua
 Spots.lua
 Panel.lua
 Commands.lua
