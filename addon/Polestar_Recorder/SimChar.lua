@@ -1,11 +1,19 @@
 -- Sim telemetry's character snapshot (docs/RECORDING.md, "Sim telemetry"):
 -- the `char` record, the stats, gear and talents a leveling simulator's
 -- gear budget is checked against. Only while /psrec sim is on and
--- recording; written at /psrec sim on and a session's start, after a level
--- up, after talents change, and when equipment changes settle (at most once
--- per GEAR_SECONDS), always out of combat (the client restricts unit stats
--- in combat). A snapshot equal to the character's last one is not written
--- again (its text is kept per character in PolestarRecorderCharDB.simChar).
+-- recording; written at /psrec sim on and at every session's start (login or
+-- reload, START_DELAY after PLAYER_ENTERING_WORLD, when the stats and talents
+-- have loaded), after a level up, after talents change, and when equipment
+-- changes settle (at most once per GEAR_SECONDS), always out of combat (the
+-- client restricts unit stats in combat). The level, talent and gear ones are
+-- not written when equal to the character's last one (its text is kept per
+-- character in PolestarRecorderCharDB.simChar); the session's and /psrec sim
+-- on's always are, because Polestar Client deletes uploaded chunks and a
+-- session must carry its own sheet.
+--
+-- A read the client keeps secret (or one that fails) leaves its fields empty
+-- and sets the snapshot's `secret` letter (s stats, g gear, t talents); the
+-- snapshot is written with what was readable, never dropped.
 --
 -- APIs, verified against .ref/wow-ui-source-forever (Blizzard_APIDocumentation
 -- Generated, Camelot PaperDollFrame): UnitStat (base, effective), UnitArmor,
@@ -42,7 +50,10 @@ local secret -- the snapshot's secret letters while it reads
 local function read(letter, fn, ...)
 	if type(fn) ~= "function" then return nil end
 	local r = pack(pcall(fn, ...))
-	if not r[1] then return nil end
+	if not r[1] then
+		secret[letter] = true -- a read that failed is as unknown as a secret one
+		return nil
+	end
 	for i = 2, r.n do
 		if r[i] ~= nil and not usable(r[i]) then
 			r[i] = nil
@@ -149,6 +160,15 @@ local function talents()
 	return #out > 0 and concat(out, ";") or nil
 end
 
+-- fn(...) for a part of the snapshot; an error leaves the part empty and
+-- sets its letter instead of losing the whole snapshot.
+local function part(letter, fn, ...)
+	local ok, v = pcall(fn, ...)
+	if ok then return v end
+	secret[letter] = true
+	return nil
+end
+
 -- The snapshot's fields (docs/RECORDING.md `char`), without `why` and `secret`.
 local function snapshot()
 	local _, class = UnitClass("player")
@@ -161,18 +181,18 @@ local function snapshot()
 	add(whole(Num(UnitLevel("player"))))
 	add(Str(class))
 	add(Str(race))
-	add(stats())
+	add(part("s", stats))
 	add(whole(read("s", UnitHealthMax, "player")))
 	add(whole(read("s", UnitPowerMax, "player", 0)))
 	local base, eff = read("s", UnitArmor, "player")
 	add(whole(eff) or whole(base))
-	add(ap(UnitAttackPower))
-	add(ap(UnitRangedAttackPower))
-	add(schools(GetSpellBonusDamage, 1))
+	add(part("s", ap, UnitAttackPower))
+	add(part("s", ap, UnitRangedAttackPower))
+	add(part("s", schools, GetSpellBonusDamage, 1))
 	add(whole(read("s", GetSpellBonusHealing)))
 	add(cent(read("s", GetCritChance)))
 	add(cent(read("s", GetRangedCritChance)))
-	add(schools(GetSpellCritChance, 100))
+	add(part("s", schools, GetSpellCritChance, 100))
 	add(cent(read("s", GetHitModifier)))
 	add(cent(read("s", GetSpellHitModifier)))
 	add(cent(read("s", GetDodgeChance)))
@@ -196,8 +216,8 @@ local function snapshot()
 	add(hasRanged and cent(rMin) or nil)
 	add(hasRanged and cent(rMax) or nil)
 	add(hasRanged and cent(rSpeed) or nil)
-	add(gear())
-	add(talents())
+	add(part("g", gear))
+	add(part("t", talents))
 	return f, n
 end
 
@@ -241,10 +261,10 @@ local function write()
 	for _, c in ipairs(WHY) do
 		if why[c] then w = w .. c end
 	end
-	local gearAsked = why.g
+	local gearAsked, always = why.g, why.o
 	why = {}
 	local char = ns.CharDB()
-	if char.simChar == text then return end
+	if char.simChar == text and not always then return end
 	f[n + 1], f[n + 2] = w, s
 	if ns.SimEmit(GetTime(), "char", unpack(f, 1, n + 2)) then
 		char.simChar = text

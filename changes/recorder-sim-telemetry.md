@@ -12,3 +12,6 @@ section: players
   ids of your gear and your talents) after each level, talent point and gear
   change, your pet's health and deaths, and what led to each of your deaths
   and how long it took to be back.
+  Values the game keeps secret for the whole session (health and mana in
+  WoW: Forever) are checked once and then left alone, and the timing of
+  fights, rests and meals is still recorded.

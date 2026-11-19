@@ -27,11 +27,36 @@
 -- uploader's library may not know these kinds yet.
 --
 -- Forever's combat log is closed (Finds.lua), and the client makes values
--- secret in combat: UnitHealth (SecretReturns), UnitPower and UnitStat (when
--- restricted), aura data, unit identity, UNIT_SPELLCAST_SUCCEEDED's spell.
--- Every read goes through ns.Num/ns.Str: a secret value reads as unknown,
--- leaves its field empty and sets a letter in the pull's `secret` field, so
--- the data says what could not be seen. /psrec sim shows what reads now.
+-- secret: UnitHealth always (SecretReturns, in and out of combat), UnitPower
+-- for every power type the client does not flag as never secret (mana was
+-- secret in and out of combat in the first real sessions), UnitStat and the
+-- regen rates when unit stats are restricted (combat), aura data in combat,
+-- unit identity, UNIT_SPELLCAST_SUCCEEDED's spell. Every read goes through
+-- ns.Num/ns.Str: a secret value reads as unknown, leaves its field empty and
+-- sets a letter in the pull's `secret` field, so the data says what could not
+-- be seen. /psrec sim shows what reads now.
+--
+-- Health and power that are secret out of combat stay secret all session, so
+-- they are probed once per session (`unavailable`, out of combat): then the
+-- Recorder stops reading them (no UNIT_HEALTH/UNIT_POWER_FREQUENT work, no
+-- `regen` or `hit` for that resource, empty health/power fields in `pull` and
+-- `meal` with `h`/`p` still in `secret`) and says so once, in the session's
+-- `ctx` line of the local copy. Timing keeps working: `pull` lengths, gaps and
+-- the rest between pulls, `meal` lengths (Food/Drink auras are readable out of
+-- combat), kills, XP, casts.
+--
+-- No non-secret proxy for the current health or mana exists in the client's
+-- API documentation (checked for Forever, Blizzard_APIDocumentationGenerated):
+-- UnitHealthMissing/UnitHealthPercent/UnitGetIncomingHeals are SecretReturns,
+-- UnitPowerMissing/UnitPowerPercent follow UnitPower, a StatusBar's GetValue
+-- and GetMinMaxValues return secrets for a secret bar value (the
+-- PlayerFrame's bars), UNIT_HEALTH/UNIT_POWER_* carry only the unit and the
+-- power token, UNIT_COMBAT's amount is a SecretValue, and
+-- C_CombatText.GetCurrentEventInfo is SecretReturns. What stays readable for
+-- the player: UnitHealthMax and UnitPowerMax (secret only for units that are
+-- not player-controlled), GetHealthRegen (no secret flag at all), and
+-- GetManaRegen/GetPowerRegen/UnitStat out of combat: the `char` snapshot
+-- keeps those (the client's own regen rates per level, Spirit and gear).
 --
 -- APIs, verified against .ref/wow-ui-source-forever (Blizzard_APIDocumentation
 -- Generated): UnitHealth / UnitHealthMax, UnitPower / UnitPowerMax /
@@ -70,6 +95,7 @@ local DEATH_PULL_SLACK = 2 -- a pull that ended this long before PLAYER_DEAD is 
 local CAST_CAP = 24 -- most distinct spells (and items) listed per pull
 local GAP_CAP = 300 -- gaps (tenths of a second) above this share one bin
 local SIMLOG_BYTES = 512 * 1024 -- the local copy keeps the newest records up to this size
+local TENTHS_FORMAT = "%.0f" -- epoch tenths pass 2^31: the client's "%d" takes 32-bit integers only
 ns.SIMLOG_BYTES = SIMLOG_BYTES
 
 ---------------------------------------------------------------------------
@@ -130,6 +156,8 @@ local function save()
 	db.simlog = #simlog > 0 and simlog or nil
 end
 
+local keepFailed = false -- an error in the local copy was reported this session
+
 function ns.SimOn() return on end
 
 function ns.SetSim(v)
@@ -137,8 +165,9 @@ function ns.SetSim(v)
 	on = v and true or false
 	save()
 	if on and not was and ns.Recording() then
-		keepContext()
+		-- the snapshot is asked for first: nothing below may keep it from coming
 		if ns.SimCharNow then ns.SimCharNow("o") end
+		keepContext()
 		ns.SimPetNow()
 	end
 end
@@ -166,15 +195,30 @@ local function trim()
 end
 
 -- Appends a line to the local copy: kind, server time (tenths of a second),
--- the character id, the fields.
-local function keep(t, kind, ...)
-	local parts = { kind, format("%d", floor((GetServerTime() - (GetTime() - t)) * 10 + 0.5)), ns.CharId() or "" }
+-- the character id, the fields. The time is formatted with "%.0f": the
+-- client's "%d" raises an error above 2^31, and server time in tenths is far
+-- above it (the cause of the empty copy and the missing `char` of the first
+-- real sessions).
+local function append(t, kind, ...)
+	local parts = { kind, format(TENTHS_FORMAT, floor((GetServerTime() - (GetTime() - t)) * 10 + 0.5)), ns.CharId() or "" }
 	for i = 1, select("#", ...) do parts[#parts + 1] = ns.Field((select(i, ...))) end
 	local line = concat(parts, "\t")
 	simlog[#simlog + 1] = line
 	simBytes = simBytes + #line + 1
 	trim()
 	ns.DB().simlog = simlog
+end
+
+-- append, never raising: a failing local copy must not cost the caller its
+-- record (the chunk's) or what it does next. The first error of a session is
+-- passed to the error handler.
+local function keep(t, kind, ...)
+	local ok, err = pcall(append, t, kind, ...)
+	if not ok and not keepFailed then
+		keepFailed = true
+		geterrorhandler()(err)
+	end
+	return ok
 end
 
 -- Writes a record at GetTime() time t into the chunk and the local copy.
@@ -208,6 +252,10 @@ end)
 
 local pull -- the running pull, or nil
 local readable = {} -- letter -> true (read) | false (secret) at the last try, for /psrec sim
+-- h, p -> true when the player's health / power was secret out of combat this
+-- session (then never read again until the next session), false readable, nil
+-- not probed yet
+local unavailable = {}
 
 local sink -- a snapshot's own secret letters while it reads (pet, simdeath), or nil
 
@@ -250,10 +298,29 @@ local function num(letter, fn, ...)
 	return type(a) == "number" and round(a) or nil
 end
 
-local function health() return num("h", UnitHealth, "player"), num("h", UnitHealthMax, "player") end
+-- Health and the player's power, current and maximum. A resource that is
+-- unavailable this session is not read: its current value is nil and its
+-- letter is set as a secret read would set it; the maximum is still read.
+local function skipped(letter)
+	readable[letter] = false
+	if pull then pull.secret[letter] = true end
+	if sink then sink[letter] = true end
+end
+
+local function health()
+	if unavailable.h then
+		skipped("h")
+		return nil, num("h", UnitHealthMax, "player")
+	end
+	return num("h", UnitHealth, "player"), num("h", UnitHealthMax, "player")
+end
 
 local function power(pt)
 	if pt == nil then return nil, nil end
+	if unavailable.p then
+		skipped("p")
+		return nil, num("p", UnitPowerMax, "player", pt)
+	end
 	return num("p", UnitPower, "player", pt), num("p", UnitPowerMax, "player", pt)
 end
 
@@ -280,6 +347,29 @@ local function inCombat()
 	local v = UnitAffectingCombat and UnitAffectingCombat("player")
 	return usable(v) and v == true
 end
+
+-- Decides, out of combat, whether the player's health and power are secret
+-- for this session (Forever: UnitHealth always is, mana was too). Undecided
+-- (nil) in combat or without the function; then tried again after a pull.
+local function probeUnavailable()
+	if inCombat() then return end
+	if unavailable.h == nil and type(UnitHealth) == "function" then
+		local ok, v = pcall(UnitHealth, "player")
+		if ok and v ~= nil then unavailable.h = not usable(v) end
+	end
+	if unavailable.p == nil and type(UnitPower) == "function" then
+		local okt, pt = pcall(UnitPowerType or function() end, "player")
+		pt = okt and Num(pt) or 0
+		local ok, v = pcall(UnitPower, "player", pt)
+		if ok and v ~= nil then unavailable.p = not usable(v) end
+	end
+end
+
+-- The letters of what is unavailable this session ("h", "p", "hp" or "").
+local function unavailableLetters()
+	return (unavailable.h and "h" or "") .. (unavailable.p and "p" or "")
+end
+ns.SimUnavailable = unavailableLetters
 
 -- Rates per second times 10, of the client's own regen readings.
 local function rate10(v)
@@ -708,6 +798,7 @@ local function endPull()
 		petSnapshot("e")
 	end
 	lastPullEnd = now
+	if unavailable.h == nil or unavailable.p == nil then probeUnavailable() end
 	waiting[#waiting + 1] = p
 	C_Timer.After(PULL_DELAY, function()
 		for i = #waiting, 1, -1 do
@@ -722,8 +813,12 @@ end
 
 -- Finds.lua: every kill record written (at the time of the death), to the
 -- running pull or one that ended within PULL_DELAY.
+-- A kill flagged tapped (another player's tag) counts when it gave XP: a
+-- tapped kill gives none, and the flag came out 1 on most kills that did in
+-- the first real sessions (Finds.lua's CanLootUnit check).
 function ns.SimKill(t, xp, tapped)
-	if not on or tapped == true or type(t) ~= "number" then return end
+	local gained = Num(xp)
+	if not on or type(t) ~= "number" or (tapped == true and not (gained and gained > 0)) then return end
 	local p = pull
 	if not (p and t >= p.t0 - KILL_SLACK) then
 		p = nil
@@ -737,7 +832,7 @@ function ns.SimKill(t, xp, tapped)
 	end
 	if not p then return end
 	p.kills = p.kills + 1
-	p.xp = p.xp + (Num(xp) or 0)
+	p.xp = p.xp + (gained or 0)
 end
 
 -- World.lua: an item the player used (bags, action bars, quest items).
@@ -858,10 +953,14 @@ local function active() return on and ns.Recording() end
 -- The local copy's own `ctx` line (never a chunk record: the chunk's
 -- `session` says it): the character's race and class tokens and level, so
 -- the copy reads without the chunks an upload deleted.
+-- Its last field says once per session which of the player's health (`h`)
+-- and power (`p`) are secret even out of combat, so not recorded this
+-- session (empty: readable, or not known yet).
 keepContext = function()
 	local _, race = UnitRace("player")
 	local _, class = UnitClass("player")
-	keep(GetTime(), "ctx", Str(race), Str(class), level())
+	probeUnavailable()
+	keep(GetTime(), "ctx", Str(race), Str(class), level(), unavailableLetters())
 end
 
 ns.On("PLAYER_REGEN_DISABLED", function()
@@ -894,7 +993,7 @@ ns.On("UNIT_HEALTH", function(_, unit)
 		petHealthChanged()
 		return
 	end
-	if unit ~= "player" or not active() then return end
+	if unit ~= "player" or unavailable.h or not active() then return end
 	if pull then
 		combatHealth()
 	else
@@ -903,12 +1002,12 @@ ns.On("UNIT_HEALTH", function(_, unit)
 end)
 
 ns.On("UNIT_MAXHEALTH", function(_, unit)
-	if unit ~= "player" or not active() or pull then return end
+	if unit ~= "player" or unavailable.h or not active() or pull then return end
 	observe("h", health())
 end)
 
 ns.On("UNIT_POWER_FREQUENT", function(_, unit)
-	if unit ~= "player" or not active() then return end
+	if unit ~= "player" or unavailable.p or not active() then return end
 	local p = pull
 	if p then
 		local cur = power(p.pt)
@@ -976,7 +1075,9 @@ ns.OnSession(function()
 	pull, meal, target, lastPullEnd, lastMealEnd, deathCtx, petSeen = nil, nil, nil, nil, nil, nil, nil
 	mealsSince = { flags = "", seconds = 0 }
 	hotUntil, lastSpend, lastCast, selfDamageUntil, channeling = -math.huge, -math.huge, -math.huge, -math.huge, false
+	unavailable, keepFailed = {}, false
 	if active() then
+		probeUnavailable()
 		last.h.v, last.h.max = health()
 		last.m.v, last.m.max = power(0)
 		scanAuras()
@@ -986,6 +1087,9 @@ ns.OnSession(function()
 end)
 
 ns.OnLogout(function()
+	-- the copy goes into the table the client saves now, whatever happened to
+	-- the one it was put in before
+	save()
 	if not active() then return end
 	local now = GetTime()
 	for res in pairs(agg) do flushRegen(res, now) end

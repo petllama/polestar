@@ -3,7 +3,7 @@
 //! lost to a single mob (`hit`), the character sheet (`char`, SimChar.lua), the pet (`pet`) and a death's
 //! context (`simdeath`), against tests/lua/stub_recorder.lua.
 
-use crate::recorder::{run, run_with, strings};
+use crate::recorder::{run_with, strings};
 use forge_addontest::truthy;
 use serde_json::json;
 
@@ -30,8 +30,30 @@ local function mob(token, id, name, lvl, threat)
 end
 "#;
 
+/// The live client's `string.format`: `%d` (and `%i`) take 32-bit integers only and raise an error for
+/// anything larger, where the stub's Lua prints any whole number. Server time in tenths of a second
+/// (about 1.8e10) is far above 2^31: in the first real sessions every write to the local copy raised
+/// here, so `simlog` was never saved and `/psrec sim on` stopped before asking for the `char` snapshot.
+const CLIENT_FORMAT: &str = r#"
+local plain = string.format
+string.format = function(fmt, ...)
+	local args, i = { ... }, 0
+	for conv in tostring(fmt):gmatch("%%[-+ #0-9.]*([%a%%])") do
+		if conv ~= "%" then
+			i = i + 1
+			local v = args[i]
+			if (conv == "d" or conv == "i") and type(v) == "number" and (v >= 2 ^ 31 or v < -2 ^ 31) then
+				error("bad argument #" .. (i + 1) .. " to 'format' (integer out of range)", 2)
+			end
+		end
+	end
+	return plain(fmt, ...)
+end
+format = string.format
+"#;
+
 fn sim(script: &str) -> serde_json::Value {
-	run(&format!("{SETUP}{script}"))
+	run_with(&format!("{SETUP}{script}"), CLIENT_FORMAT, true, None)
 }
 
 #[test]
@@ -95,7 +117,8 @@ fn regen_is_aggregated_per_resource_and_state_and_a_meal_records_the_rest_thresh
 	// The local copy: kind, server epoch in tenths, the character id, then the same fields.
 	let log = strings(&out["log"]);
 	// the copy's own context line first: race and class tokens, level
-	assert_eq!(log[0].split('\t').skip(3).collect::<Vec<_>>(), ["Human", "WARRIOR", "1"]);
+	// (and what is unavailable all session: nothing here)
+	assert_eq!(log[0].split('\t').skip(3).collect::<Vec<_>>(), ["Human", "WARRIOR", "1", ""]);
 	assert!(log[0].starts_with("ctx\t"));
 	// the regen and meal lines, and the `char` snapshot /psrec sim on asked for
 	assert_eq!(log.len(), 8);
@@ -417,4 +440,157 @@ fn a_death_writes_its_context_once_alive_with_the_time_and_how_and_resurrection_
 			"simdeath|1|1429|5000|5000|Northshire Valley|||200|||||||||||||200|200||||0||||",
 		]
 	);
+}
+
+#[test]
+fn the_local_copy_and_the_char_snapshot_survive_the_clients_32_bit_format() {
+	// The first real session: recording on at login, `/psrec sim on` typed in play, then pulls. Under the
+	// client's `format` the copy stayed empty and no `char` was ever written.
+	let out = sim(&format!(
+		"{SHEET}{}",
+		r#"
+		cmd("sim on")
+		stub.advance(2)
+		fight()
+		stub.advance(3)
+		calm()
+		stub.advance(4)
+		logout()
+		local kinds = {}
+		for _, l in ipairs(PolestarRecorderDB.simlog or {}) do kinds[#kinds + 1] = l:match("^(%a+)\t") end
+		emit({ chunk = #recs("char"), kinds = kinds, first = (PolestarRecorderDB.simlog or {})[1] })"#
+	));
+	assert_eq!(out["chunk"], 1, "the char snapshot of /psrec sim on is in the chunk");
+	assert_eq!(strings(&out["kinds"]), ["ctx", "char", "pull"]);
+	let first = out["first"].as_str().unwrap();
+	assert!(first.split('\t').nth(1).unwrap().parse::<u64>().unwrap() >= 17_910_000_000, "{first}");
+}
+
+#[test]
+fn a_session_start_writes_the_char_snapshot_again_even_when_it_is_unchanged() {
+	// Polestar Client deletes uploaded chunks: a sheet written in an earlier session may be gone, so every
+	// session (here a reload) carries its own, while a level up that changed nothing writes none.
+	let out = sim(&format!(
+		"{SHEET}{}",
+		r#"
+		cmd("sim on")
+		stub.advance(2)
+		stub.fire("PLAYER_LEVEL_UP", 1)
+		stub.advance(4)
+		stub.fire("PLAYER_ENTERING_WORLD", false, true)
+		stub.advance(11)
+		logout()
+		emit({ recs = recs("char"), bad = malformed() })"#
+	));
+	assert_eq!(out["bad"], json!({}));
+	let why: Vec<String> = strings(&out["recs"]).iter().map(|r| r.split('|').rev().nth(1).unwrap().to_string()).collect();
+	assert_eq!(why, ["o", "o"]);
+}
+
+#[test]
+fn a_char_snapshot_with_a_failing_read_is_written_with_what_was_readable() {
+	let out = sim(&format!(
+		"{SHEET}{}",
+		r#"
+		C_Traits.GetTreeNodes = function() error("client error") end
+		W.statsBase = nil
+		UnitStat = function() return stub.secret(), stub.secret() end
+		cmd("sim on")
+		stub.advance(2)
+		logout()
+		emit({ recs = recs("char"), bad = malformed() })"#
+	));
+	assert_eq!(out["bad"], json!({}));
+	let recs = strings(&out["recs"]);
+	assert_eq!(recs.len(), 1);
+	let f: Vec<&str> = recs[0].split('|').collect();
+	// stats empty (secret), gear kept, talents empty (the read failed); both said
+	assert_eq!(f[4], ":;:;:;:;:");
+	assert_eq!(f[32], "1:7046:;16:2208:241");
+	assert_eq!(f[33], "");
+	assert_eq!(&f[34..], ["o", "st"]);
+}
+
+#[test]
+fn health_and_power_secret_out_of_combat_are_probed_once_and_not_read_again_this_session() {
+	// Forever: UnitHealth is always secret and mana was too. The session says so once (`ctx`), stops the
+	// health/power work (no `regen`, no `hit`), and keeps the timing: pulls, gaps, meal lengths, kills.
+	let out = sim(
+		r#"
+		W.hp, W.power[0] = stub.secret(), stub.secret()
+		local reads = 0
+		local realHealth, realPower = UnitHealth, UnitPower
+		UnitHealth = function(...) reads = reads + 1 return realHealth(...) end
+		UnitPower = function(...) reads = reads + 1 return realPower(...) end
+		cmd("sim on")
+		local probed = reads
+		for _ = 1, 20 do
+			stub.advance(1)
+			stub.fire("UNIT_HEALTH", "player")
+			stub.fire("UNIT_POWER_FREQUENT", "player", "MANA")
+		end
+		fight()
+		for _ = 1, 10 do
+			stub.advance(1)
+			stub.fire("UNIT_HEALTH", "player")
+			stub.fire("UNIT_POWER_FREQUENT", "player", "MANA")
+		end
+		calm()
+		stub.advance(4)
+		aura({ { auraInstanceID = 9, name = "Food", spellId = 433, duration = 21, expirationTime = stub.now + 21 } })
+		stub.advance(12)
+		aura({})
+		stub.advance(6)
+		fight()
+		stub.advance(2)
+		calm()
+		stub.advance(4)
+		logout()
+		emit({ recs = recs("regen hit meal pull"), bad = malformed(), probed = probed, after = reads - probed, ctx = PolestarRecorderDB.simlog[1] })"#,
+	);
+	assert_eq!(out["bad"], json!({}));
+	assert_eq!(out["probed"], 2, "one health and one power read decide it");
+	assert_eq!(out["after"], 0, "nothing reads them again this session");
+	assert!(out["ctx"].as_str().unwrap().ends_with("\tHuman\tWARRIOR\t1\thp"), "{}", out["ctx"]);
+	assert_eq!(
+		strings(&out["recs"]),
+		[
+			"pull|100|1||||200|0||||300|0|0|0||||||||||||0|0|hp|||||",
+			"meal|f|12|1|||200|||300",
+			"pull|20|1||||200|0||||300|0|0|0||||||||||22|f|12|0|hp|||||",
+		]
+	);
+}
+
+#[test]
+fn a_kill_flagged_tapped_counts_for_the_pull_when_it_gave_xp() {
+	// In the first real session the kill record's tap flag was 1 on most kills that gave XP (the loot check
+	// said "cannot loot"), and those pulls read 0 kills. XP proves the tag; a tapped kill without XP stays out.
+	let out = sim(
+		r#"
+		cmd("sim on")
+		local wolf = mob("target", 299, "Young Wolf", 3, nil)
+		stub.fire("PLAYER_TARGET_CHANGED")
+		W.lootable = { [wolf] = { true, false } }
+		fight()
+		stub.advance(2)
+		stub.partyKill(wolf)
+		stub.unitDied(wolf)
+		stub.xpLine("Young Wolf", 45)
+		stub.advance(1)
+		local other = mob("nameplate1", 299, "Young Wolf", 3, nil)
+		W.units.nameplate1.tapped = true
+		stub.fire("NAME_PLATE_UNIT_ADDED", "nameplate1")
+		stub.unitDied(other)
+		stub.advance(1)
+		calm()
+		stub.advance(4)
+		logout()
+		emit({ kills = recs("kill"), pulls = recs("pull") })"#,
+	);
+	let kills = strings(&out["kills"]);
+	assert!(kills.iter().any(|k| k.starts_with("kill|299|3|n|") && k.contains("|45||1|")), "{kills:?}");
+	let pull: Vec<String> = strings(&out["pulls"]);
+	let f: Vec<&str> = pull[0].split('|').collect();
+	assert_eq!((f[12], f[13]), ("1", "45"), "{pull:?}");
 }
